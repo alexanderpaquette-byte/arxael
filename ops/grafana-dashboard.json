@@ -137,6 +137,59 @@
         { "expr": "rate(arxael_merge_bounced_textual_total[1m]) * 60", "legendFormat": "bounced textual/min", "refId": "C" },
         { "expr": "rate(arxael_merge_errors_total[1m]) * 60", "legendFormat": "errors/min", "refId": "D" }
       ]
+    },
+    {
+      "id": 20,
+      "title": "Invoke outcomes (rate/min) — incl. OVERLOADED backpressure",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 28 },
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "fillOpacity": 10 } } },
+      "targets": [
+        { "expr": "rate(arxael_executor_invoke_success_total[1m]) * 60", "legendFormat": "success/min", "refId": "A" },
+        { "expr": "rate(arxael_executor_invoke_failed_total[1m]) * 60", "legendFormat": "failed/min", "refId": "B" },
+        { "expr": "rate(arxael_executor_invoke_overloaded_total[1m]) * 60", "legendFormat": "OVERLOADED/min (backpressure)", "refId": "C" },
+        { "expr": "rate(arxael_executor_invoke_error_total[1m]) * 60", "legendFormat": "error/min", "refId": "D" },
+        { "expr": "rate(arxael_executor_invoke_rejected_total[1m]) * 60", "legendFormat": "rejected/min", "refId": "E" }
+      ]
+    },
+    {
+      "id": 21,
+      "title": "Build time (EWMA) & hung-build cap hits",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 28 },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 } } },
+      "targets": [
+        { "expr": "arxael_executor_build_ms_typical", "legendFormat": "build time EWMA (ms)", "refId": "A" },
+        { "expr": "arxael_executor_build_run_cap_hits_total", "legendFormat": "run-cap hits (hang canary — want 0)", "refId": "B" }
+      ]
+    },
+    {
+      "id": 22,
+      "title": "Time-to-land p50 / p95 / p99",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 36 },
+      "fieldConfig": { "defaults": { "unit": "ms", "custom": { "drawStyle": "line", "fillOpacity": 10 } } },
+      "targets": [
+        { "expr": "arxael_merge_p50_time_to_land_ms", "legendFormat": "p50", "refId": "A" },
+        { "expr": "arxael_merge_p95_time_to_land_ms", "legendFormat": "p95", "refId": "B" },
+        { "expr": "arxael_merge_p99_time_to_land_ms", "legendFormat": "p99", "refId": "C" }
+      ]
+    },
+    {
+      "id": 23,
+      "title": "Governor live sensors (the inputs that drive every resize)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 36 },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 } } },
+      "targets": [
+        { "expr": "arxael_governor_cpu_load1", "legendFormat": "CPU load1", "refId": "A" },
+        { "expr": "arxael_governor_io_wait_pct", "legendFormat": "%iowait", "refId": "B" },
+        { "expr": "arxael_governor_mem_avail_mb / 1024", "legendFormat": "mem avail (GB)", "refId": "C" }
+      ]
     }
   ]
 }

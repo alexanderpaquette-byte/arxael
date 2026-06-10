@@ -4,6 +4,23 @@ The daemon exposes its live state as Prometheus metrics **natively** — no expo
 dependency. `GET /metrics` on the loopback port renders the same snapshots you see on `/health` and
 `/merge/status` in the text exposition format.
 
+## 0. One command (Docker) — stand it up + watch it
+
+```bash
+ops/observe-up.sh        # Prometheus :9090 + Grafana :3000, dashboard auto-loaded, scraping the local daemon
+ops/observe-down.sh      # tear the stack down (leaves the daemon running)
+```
+
+The daemon binds **loopback only** (trusted-agents model), so watch Grafana through an SSH tunnel from your
+machine — no port is exposed:
+
+```bash
+ssh -L 3000:localhost:3000 <user>@<box>      # then open http://localhost:3000 (anonymous read-only; admin/admin to edit)
+```
+
+`observe-up.sh` provisions the datasource + dashboard automatically (no import wizard). It scrapes
+`ARXAEL_PORT` / `~/.arxael/port` / `8723`. Prefer the manual path below if you already run Prometheus/Grafana.
+
 ## 1. Scrape it
 
 ```bash

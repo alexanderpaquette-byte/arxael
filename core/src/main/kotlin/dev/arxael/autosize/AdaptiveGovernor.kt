@@ -32,6 +32,10 @@ class AdaptiveGovernor(
     @Volatile private var baselineMb: Long = 0L // learned on the first idle tick (OS + daemon floor)
     @Volatile private var running = false
     @Volatile private var persistedFootprintMb: Long = config.perBuildFootprintMb
+    // Last live sensor readings (for observability; -1 = not sampled yet).
+    @Volatile private var lastMemAvailMb: Long = -1L
+    @Volatile private var lastCpuLoad1: Double = -1.0
+    @Volatile private var lastIoWaitPct: Double = -1.0
     private var loop: Thread? = null
 
     // Sensor sources, injectable for testing — default to the live /proc readers below. A test sets fakes to
@@ -83,8 +87,15 @@ class AdaptiveGovernor(
             }
         }
         val current = executor.concurrencyTarget()
-        val cpuSaturated = load1Source()?.let { it > config.cores } ?: false
-        val ioSaturated = ioWaitSource().let { it != null && it > 0.5 } // disk ~half-blocked = IO-bound
+        val load1 = load1Source()
+        val ioWait = ioWaitSource()
+        // Stash the live sensor readings so /metrics + /health can show WHY the governor sized as it did
+        // (memory/CPU/IO pressure over time) — otherwise the inputs to every resize are a blind spot.
+        lastMemAvailMb = mem.availMb
+        lastCpuLoad1 = load1 ?: -1.0
+        lastIoWaitPct = ioWait?.let { it * 100.0 } ?: -1.0
+        val cpuSaturated = load1?.let { it > config.cores } ?: false
+        val ioSaturated = ioWait != null && ioWait > 0.5 // disk ~half-blocked = IO-bound
         val target = AdaptiveSizer.nextTarget(
             current, caps, mem.availMb, config.ramHeadroomMb, footprintMb,
             executor.waitingCount(), cpuSaturated, ioSaturated,
@@ -112,6 +123,11 @@ class AdaptiveGovernor(
         "buildWorkers" to config.liveBuildWorkers.get(),
         "learnedFootprintMb" to footprintMb,
         "caps" to "${caps.floor}..${caps.ceiling}",
+        "concurrencyFloor" to caps.floor,     // numeric gauges (the "caps" string above is for humans on /health)
+        "concurrencyCeiling" to caps.ceiling,
+        "memAvailMb" to lastMemAvailMb,        // live sensors driving the sizing decision (the inputs, over time)
+        "cpuLoad1" to lastCpuLoad1,
+        "ioWaitPct" to lastIoWaitPct,
         "roDepCache" to (config.liveRoDepCache.get() ?: "none"),
     )
 

@@ -3,6 +3,20 @@
 All notable changes to Arxael. Versions follow [SemVer](https://semver.org/) (pre-1.0: minor =
 notable change, patch = fix).
 
+## [1.0.5] — 2026-06-10
+
+Richer native Prometheus observability + a one-command monitoring stack (no breaking changes).
+
+- **New `/metrics` series:** per-`/invoke` outcome counters — success / failed / **overloaded** / error /
+  rejected — so throughput *and* backpressure are visible; build-time EWMA; a hung-build cap-hit counter;
+  merge time-to-land **p95/p99** (not just p50); and the adaptive governor's **live sensors** (CPU load,
+  %iowait, available memory) that drive its sizing decisions.
+- **`ops/observe-up.sh` / `observe-down.sh`:** stand up Prometheus + Grafana via Docker with the dashboard
+  auto-provisioned, scraping the loopback daemon — watch it over an SSH tunnel, nothing exposed. Pinned image
+  versions, restart-on-reboot, persistent volumes, health-checked.
+- **Grafana dashboard:** new panels for the above (invoke outcomes incl. OVERLOADED, build time + cap-hits,
+  p50/p95/p99 time-to-land, governor sensors).
+
 ## [1.0.4] — 2026-06-10
 
 Stability hardening for long-running deployments (no breaking changes).

@@ -619,7 +619,10 @@ class MergeOrchestrator(
 
     fun snapshot(): Map<String, Any> {
         val ttls = synchronized(ttlNanos) { ttlNanos.toList() }.sorted()
-        val p50Ms = if (ttls.isEmpty()) 0 else ttls[ttls.size / 2] / 1_000_000
+        // p50 alone hides the tail. p95/p99 are what surface queue-starvation under load. Same bounded sample
+        // buffer, so this is free.
+        fun pct(p: Int) = if (ttls.isEmpty()) 0 else ttls[((ttls.size * p) / 100).coerceIn(0, ttls.size - 1)] / 1_000_000
+        val p50Ms = pct(50)
         return mapOf(
             "submitted" to mSubmitted.get(),
             "landed" to mLanded.get(),
@@ -639,6 +642,8 @@ class MergeOrchestrator(
             "gatesSkipped" to mGatesSkipped.get(), // change-aware skips (inert/doc-only changes never tested)
             "errors" to mErrors.get(),
             "p50TimeToLandMs" to p50Ms,
+            "p95TimeToLandMs" to pct(95),
+            "p99TimeToLandMs" to pct(99),
         )
     }
 

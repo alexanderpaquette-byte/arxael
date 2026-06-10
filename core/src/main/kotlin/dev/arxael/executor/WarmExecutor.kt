@@ -46,6 +46,14 @@ class WarmExecutor(
     // Recent build durations, so the overload timeout adapts to how long builds actually take.
     private val durations = DurationTracker()
 
+    // ---- invoke-outcome counters (observability: throughput + backpressure visible on /metrics) ----
+    private val invSuccess = AtomicInteger(0)
+    private val invFailed = AtomicInteger(0)
+    private val invOverloaded = AtomicInteger(0) // callers shed under load — the backpressure signal to watch
+    private val invError = AtomicInteger(0)
+    private val invRejected = AtomicInteger(0)
+    private val buildRunCapHits = AtomicInteger(0) // builds cancelled at the run cap = a HANG signal (Fix A)
+
     /**
      * How long to wait for a permit before declaring the box overloaded (fail-closed). ADAPTIVE: as builds
      * lengthen with the project, a caller queued behind them is waiting, not overloaded — so the timeout is
@@ -72,6 +80,14 @@ class WarmExecutor(
         "waiting" to waitingCount(),
         "warmServers" to servers.size,
         "permitsAvailable" to permits.availablePermits(),
+        // invoke outcomes (counters) — throughput + the OVERLOADED backpressure rate, visible on /metrics
+        "invokeSuccess" to invSuccess.get(),
+        "invokeFailed" to invFailed.get(),
+        "invokeOverloaded" to invOverloaded.get(),
+        "invokeError" to invError.get(),
+        "invokeRejected" to invRejected.get(),
+        "buildRunCapHits" to buildRunCapHits.get(),
+        "buildMsTypical" to durations.typicalMs(), // gauge: EWMA of recent build times
     )
 
     /** In-flight builds right now. */
@@ -106,7 +122,22 @@ class WarmExecutor(
 
     fun servers(): Collection<WorktreeServer> = servers.values
 
+    /** Public entry: run [doSubmit] and tally the outcome by status (so /metrics shows throughput + the
+     *  OVERLOADED backpressure rate without grepping events). One place catches every return path of doSubmit. */
     fun submit(spec: InvokeSpec): InvokeOutcome {
+        val out = doSubmit(spec)
+        when (out.status) {
+            InvokeStatus.SUCCESS.name -> invSuccess
+            InvokeStatus.FAILED.name -> invFailed
+            InvokeStatus.OVERLOADED.name -> invOverloaded
+            InvokeStatus.ERROR.name -> invError
+            InvokeStatus.REJECTED.name -> invRejected
+            else -> null
+        }?.incrementAndGet()
+        return out
+    }
+
+    private fun doSubmit(spec: InvokeSpec): InvokeOutcome {
         if (shuttingDown) {
             return InvokeOutcome(
                 ok = false, status = InvokeStatus.REJECTED.name, server = "-",
@@ -196,6 +227,9 @@ class WarmExecutor(
                     // so DROP this server here -> the next invoke for this worktree builds a fresh one. Wires
                     // recovery to actual faults instead of leaving a broken connection to ERROR on every call.
                     evictFaulted(key, server)
+                    // A build cancelled at the run cap (Fix A) surfaces here as an infra fault. Tally it
+                    // distinctly: a rising buildRunCapHits means builds are HANGING — a key soak/dogfood signal.
+                    if (e.message?.contains("run cap and was cancelled") == true) buildRunCapHits.incrementAndGet()
                     val runMs = (System.nanoTime() - runStart) / 1_000_000
                     events.emit("invoke_error", mapOf("key" to key, "server" to server.id, "error" to e.message))
                     return InvokeOutcome(

@@ -13,8 +13,11 @@ package dev.arxael.invoke
 object MetricsRenderer {
     /** Snapshot keys that are monotonic cumulative counts -> emitted as Prometheus counters with a _total suffix. */
     private val COUNTER_KEYS = setOf(
+        // merge orchestrator
         "submitted", "landed", "optLanded", "batchLanded",
-        "bouncedTextual", "bouncedSemantic", "reverts", "integTests", "errors",
+        "bouncedTextual", "bouncedSemantic", "branchMissing", "reverts", "integTests", "gatesSkipped", "errors",
+        // executor invoke outcomes
+        "invokeSuccess", "invokeFailed", "invokeOverloaded", "invokeError", "invokeRejected", "buildRunCapHits",
     )
 
     /**

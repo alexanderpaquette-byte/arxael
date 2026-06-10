@@ -6,7 +6,8 @@
 
 > **Bring your own gates.** arxael does **not** replace your tests, CI, or quality gates — it runs the checks *you already trust*, just warm, bounded, and merge-safe under controlled concurrency. The comparison isn't arxael-vs-your-CI; it's *agents each hammering build/test commands independently* vs *one controlled execution layer coordinating them*.
 
-> ⚡ **Fresh box, just want it running?** One command: `bash scripts/bootstrap.sh` → verified-running in <10 min. See **[QUICKSTART.md](QUICKSTART.md)**.
+> 📦 **Just want the command?** `npm install -g arxael` → then `arxael up` in your repo. Needs Java 21+; the engine (~5 MB) is fetched on first run and **auto-tracks the latest release**. See **[cli/README.md](cli/README.md)**.
+> ⚡ **Fresh box / building from source?** One command: `bash scripts/bootstrap.sh` → verified-running in <10 min. See **[QUICKSTART.md](QUICKSTART.md)**.
 > 🤖 **AI agent with zero context?** Read **[AGENTS.md](AGENTS.md)** — the run-it-and-use-it contract.
 > 👀 **Want to *see* it work?** **[docs/FIRST-LAND.md](docs/FIRST-LAND.md)** — watch one PR land on a green `main` in 2 minutes.
 > 🧑 **Already set up, daily use?** `scripts/arxael up` / `status` / `logs` / `stop`. No jargon. See [docs/SETUP.md](docs/SETUP.md).

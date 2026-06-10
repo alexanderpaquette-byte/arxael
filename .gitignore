@@ -5,6 +5,8 @@ build/
 # Eclipse/JDT output from the VS Code Java extension (redhat.java)
 bin/
 **/bin/
+!cli/bin/
+!cli/bin/**
 .classpath
 .project
 .settings/

@@ -7,7 +7,9 @@ import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.thread
+import kotlin.concurrent.withLock
 
 /**
  * The merge orchestrator — the productionized winner from the limit-finding campaign
@@ -83,16 +85,18 @@ class MergeOrchestrator(
     private val prOutcomes = object : LinkedHashMap<String, PrOutcome>(256, 0.75f, false) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, PrOutcome>): Boolean = size > MAX_PR_OUTCOMES
     }
+    private val prLock = ReentrantLock()          // guards prOutcomes (an explicit lock + condition instead of
+    private val prChanged = prLock.newCondition() // the map's implicit monitor + Object.wait/notify)
 
     private fun setPr(branch: String, state: String, terminal: Boolean, commit: String? = null, reason: String? = null) {
-        synchronized(prOutcomes) {
+        prLock.withLock {
             prOutcomes[branch] = PrOutcome(state, terminal, commit, reason)
-            (prOutcomes as Object).notifyAll() // wake any long-pollers in prStatusWait (instead of a busy spin)
+            prChanged.signalAll() // wake any long-pollers in prStatusWait (instead of a busy spin)
         }
     }
 
     /** The last-known lifecycle state of [branch], or null if the orchestrator has no record of it. */
-    fun prStatus(branch: String): PrOutcome? = synchronized(prOutcomes) { prOutcomes[branch] }
+    fun prStatus(branch: String): PrOutcome? = prLock.withLock { prOutcomes[branch] }
 
     /** Block until [branch] reaches a TERMINAL state or [timeoutMs] elapses (long-poll for the agent's land
      *  loop). Returns the last-known outcome (possibly null/non-terminal on timeout). Uses the prOutcomes
@@ -100,13 +104,13 @@ class MergeOrchestrator(
      *  burned CPU at ~40Hz per waiter). Callers bound how many threads block here (see MergeService). */
     fun prStatusWait(branch: String, timeoutMs: Long): PrOutcome? {
         val deadlineNs = System.nanoTime() + timeoutMs * 1_000_000
-        synchronized(prOutcomes) {
+        prLock.withLock {
             while (true) {
                 val o = prOutcomes[branch]
                 if (o != null && o.terminal) return o
-                val remMs = (deadlineNs - System.nanoTime()) / 1_000_000
-                if (remMs <= 0) return o // timed out -> return whatever we have (null or non-terminal)
-                (prOutcomes as Object).wait(remMs)
+                val remNs = deadlineNs - System.nanoTime()
+                if (remNs <= 0L) return o // timed out -> return whatever we have (null or non-terminal)
+                prChanged.awaitNanos(remNs)
             }
         }
     }
@@ -376,7 +380,7 @@ class MergeOrchestrator(
     // the re-test to ⊇ the parent's failed modules keeps the re-test at least as strong as the gate that failed.
     private fun processBatched(prs: List<PullRequest>, inheritedFailScope: Set<String>? = null) {
         val merged = ArrayList<PullRequest>(prs.size)
-        var mainBase = ""                               // the main commit this batch is merged onto + tested against
+        var mainBase: String                            // the main commit this batch is merged onto + tested against
         val head = synchronized(gitLock) {
             GitOps.git(integ, "checkout", "-q", "--detach", "main")
             GitOps.git(integ, "reset", "-q", "--hard", "main")

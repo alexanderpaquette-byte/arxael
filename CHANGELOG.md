@@ -3,6 +3,22 @@
 All notable changes to Arxael. Versions follow [SemVer](https://semver.org/) (pre-1.0: minor =
 notable change, patch = fix).
 
+## [1.1.0] — 2026-06-10
+
+`npm install -g arxael` — one-command install, and the merge gate now auto-detects your language (no breaking
+changes).
+
+- **Install via npm:** `npm install -g arxael` gives you the `arxael` command. On first run it fetches the
+  engine (a ~5 MB JVM distribution) from the latest GitHub release, verifies its checksum, and caches it under
+  `~/.arxael` — **auto-tracking the latest release**, so the launcher rarely needs reinstalling as the project
+  ships. Requires **Java 21+** (clear per-OS guidance if it's missing). `arxael upgrade` pulls a newer engine;
+  `ARXAEL_ENGINE_VERSION` pins one; `ARXAEL_CORE_TARBALL` installs from a local archive (offline/air-gapped).
+- **`arxael up` auto-detects your test gate** from the project (Cargo.toml→cargo, go.mod→go,
+  `pyproject.toml`/test files→pytest, package.json→npm, build.gradle→gradle, pom.xml→maven) and prints which it
+  chose — non-gradle projects now work with **zero config**. Override with `ARXAEL_MERGE_GATE_ADAPTER`.
+- **Gradle is no longer required to run.** The daemon starts without it; only *gradle projects* need a Gradle —
+  Python/Rust/Node/Go users run completely gradle-free. (Java is still required: the daemon is a JVM service.)
+
 ## [1.0.5] — 2026-06-10
 
 Richer native Prometheus observability + a one-command monitoring stack (no breaking changes).

@@ -1,0 +1,39 @@
+{
+  "name": "arxael",
+  "version": "1.0.5",
+  "description": "Run many AI coding agents on one box without breaking `main` — a merge gate that lands their PRs onto a shared main (auto-reverting anything red) plus one warm, bounded, shared build/test executor.",
+  "keywords": [
+    "ai",
+    "agents",
+    "merge",
+    "ci",
+    "build",
+    "monorepo",
+    "orchestrator"
+  ],
+  "homepage": "https://github.com/alexanderpaquette-byte/arxael",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alexanderpaquette-byte/arxael.git"
+  },
+  "license": "Apache-2.0",
+  "bin": {
+    "arxael": "bin/arxael.js"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "scripts/"
+  ],
+  "scripts": {
+    "postinstall": "node lib/ensure-core.js --postinstall",
+    "prepack": "bash sync-scripts.sh"
+  },
+  "engines": {
+    "node": ">=16"
+  },
+  "os": [
+    "linux",
+    "darwin"
+  ]
+}

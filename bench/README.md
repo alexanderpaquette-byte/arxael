@@ -44,7 +44,10 @@ These prove the product end-to-end through the REAL shipped code (not the `merge
 
 ```bash
 bash bench/lang_smoke.sh            # multi-language /invoke on real toolchains (pytest/go/cargo/npm) -> ALL GREEN
-python3 bench/lang_merge_smoke.py   # the FULL merge workflow on pytest: good lands, bad bounces, main green
+bash bench/lang_merge_all.sh        # the FULL merge workflow per language, EACH ISOLATED (own daemon, own port,
+                                    # no reaper): good lands, bad bounces, main green — pytest/cargo/go/npm
+python3 bench/lang_merge_test.py go # just one language (the building block lang_merge_all.sh runs in isolation)
+python3 bench/lang_merge_smoke.py   # (legacy) the pytest merge proof via merge_sim's reaping daemon-start
 python3 bench/chaos_recovery.py     # SIGKILL the daemon mid-merge -> restart recovers, main green, 0 reverts
 python3 bench/merge_http_load.py --auto-warm --agents 8   # throughput (merges/min) through the real orchestrator
 bash bench/realworld_container.sh   # isolated container, kit built from source, synthetic wide-DAG, many agents

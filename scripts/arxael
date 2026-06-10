@@ -31,7 +31,27 @@ find_gradle_home() {
   done
   command -v gradle >/dev/null 2>&1 && dirname "$(dirname "$(readlink -f "$(command -v gradle)")")"
 }
-core_bin() { echo "$HERE/core/build/install/core/bin/core"; }
+# Pick the merge-gate test command from the project in this directory, so `arxael up` "just works" for
+# non-gradle stacks instead of defaulting to gradle and erroring on a Python/Rust/Node/Go repo. The daemon
+# reads ARXAEL_MERGE_GATE_ADAPTER at startup; a value the user already set always wins.
+# True if ANY argument exists. Unmatched globs (nullglob off) arrive as a literal that -e reports false, so
+# this is safe to call with a mix of literal names and globs — unlike `ls a b`, which fails if any arg is absent.
+_any_exist() { local x; for x in "$@"; do [ -e "$x" ] && return 0; done; return 1; }
+detect_gate_adapter() {
+  [ -n "${ARXAEL_MERGE_GATE_ADAPTER:-}" ] && { echo "$ARXAEL_MERGE_GATE_ADAPTER"; return; }
+  local d="${1:-$PWD}"
+  if   _any_exist "$d"/build.gradle* "$d"/settings.gradle*; then echo gradle
+  elif _any_exist "$d/pom.xml";                             then echo maven
+  elif _any_exist "$d/Cargo.toml";                          then echo cargo
+  elif _any_exist "$d/go.mod";                              then echo go
+  elif _any_exist "$d"/pyproject.toml "$d"/setup.py "$d"/setup.cfg "$d"/pytest.ini "$d"/tox.ini "$d"/conftest.py "$d"/test_*.py "$d"/*_test.py; then echo pytest
+  elif _any_exist "$d/package.json";                        then echo npm
+  else echo ""; fi
+}
+
+# The daemon launcher. Defaults to the local build, but ARXAEL_CORE_BIN overrides it so a packaged/downloaded
+# distribution (e.g. the npm installer's vendored core) can point at its own copy without a source build.
+core_bin() { echo "${ARXAEL_CORE_BIN:-$HERE/core/build/install/core/bin/core}"; }
 port() { cat "$PORT_FILE" 2>/dev/null || echo 8723; }
 is_running() { local p; p="$(cat "$PID_FILE" 2>/dev/null)"; [ -n "$p" ] && kill -0 "$p" 2>/dev/null; }
 api() { curl -fsS -m "${2:-10}" "http://127.0.0.1:$(port)$1"; }              # GET
@@ -70,17 +90,26 @@ choose_budget() {
 }
 
 cmd_up() {
-  local gh; gh="$(find_gradle_home)"
-  if [ -z "$gh" ]; then
-    say "$ERR Setting up the engine needs Java's build tool (Gradle) once — and I couldn't find it."
-    say "   (That's for the helper itself; ${B}your${D} project can be Python/Rust/Node/Go/etc.)"
-    say "   One-time setup: ${B}bash $HERE/scripts/install.sh${D}   then run ${B}arxael up${D} again."
+  # Java is REQUIRED — the helper is a JVM daemon. (Gradle is NOT required to run it; see below.)
+  if ! command -v java >/dev/null 2>&1 && [ ! -x "${JAVA_HOME:-/nonexistent}/bin/java" ]; then
+    say "$ERR The helper is a Java program and I couldn't find Java (21+)."
+    say "   One-time setup: ${B}bash $HERE/scripts/install.sh${D} (installs Java + Gradle), then ${B}arxael up${D}."
     exit 1
   fi
+  local gh; gh="$(find_gradle_home)"   # OPTIONAL: only needed to BUILD the engine, or to run GRADLE projects
   if [ ! -x "$(core_bin)" ]; then
+    # the engine isn't built yet -> building it from source needs Gradle
+    if [ -z "$gh" ]; then
+      say "$ERR The engine isn't built yet, and building it from source needs Java's build tool (Gradle)."
+      say "   One-time: ${B}bash $HERE/scripts/install.sh${D} then ${B}arxael up${D} — or get the prebuilt engine with ${B}npm install -g arxael${D} (no Gradle needed)."
+      exit 1
+    fi
     say "$WARN First run — building the helper once (takes a minute)…"
     ( cd "$HERE" && ARXAEL_GRADLE_HOME="$gh" ./gradlew -q :core:installDist ) || { say "$ERR Build failed. See above."; exit 1; }
   fi
+  # The engine is present. Gradle is OPTIONAL from here: the daemon starts without it, and only GRADLE
+  # projects need it — Python/Rust/Node/Go/etc. work gradle-free.
+  [ -z "$gh" ] && say "$WARN No Gradle found — the daemon runs and any non-gradle project works; gradle-project builds need Gradle (${B}scripts/install.sh${D} adds it)."
 
   if is_running; then
     say "$OK Already on."
@@ -89,8 +118,10 @@ cmd_up() {
     # pick a free port so it never clashes with anything else you are running
     local p=8723; while curl -fsS -m1 "http://127.0.0.1:$p/health" >/dev/null 2>&1; do p=$((p+1)); done
     echo "$p" > "$PORT_FILE"
+    local gate; gate="$(detect_gate_adapter)"
+    [ -n "$gate" ] && [ "$gate" != gradle ] && say "  Test gate: ${B}$gate${D} (auto-detected; override with ARXAEL_MERGE_GATE_ADAPTER)."
     say "Starting your helper…"
-    env ${BUDGET_ENV} ARXAEL_GRADLE_HOME="$gh" ARXAEL_PORT="$p" ARXAEL_STATE_DIR="$STATE" \
+    env ${BUDGET_ENV} ${gh:+ARXAEL_GRADLE_HOME="$gh"} ${gate:+ARXAEL_MERGE_GATE_ADAPTER="$gate"} ARXAEL_PORT="$p" ARXAEL_STATE_DIR="$STATE" \
       setsid "$(core_bin)" >"$LOG_FILE" 2>&1 < /dev/null &
     echo $! > "$PID_FILE"
     for _ in $(seq 1 50); do api /health 1 >/dev/null 2>&1 && break; sleep 0.2; done

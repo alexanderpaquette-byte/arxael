@@ -18,15 +18,15 @@ for power users / CI who want the knobs.
 
 # Agent-native setup (wraps the deterministic install script)
 
-A coding agent reads this on a fresh box to detect prereqs, install, configure, and smoke-test
+a coding agent reads this on a fresh box to detect prereqs, install, configure, and smoke-test
 the substrate. It WRAPS the deterministic `scripts/install.sh` (the source of truth) — power users / CI
 run that script directly and skip this prose. The acceptance smoke test is deterministic and
 agent-independent (start daemon → `/invoke` a trivial build → assert green).
 
 ## 0. What you're standing up
 A long-lived daemon (`core/`) on loopback `127.0.0.1:<port>`; agents `POST /invoke` build/test work and it
-runs them on N warm bounded per-worktree servers. See `docs/OVERVIEW.md` for the shape and
-`docs/ARCHITECTURE.md` for the why + tuned config + limits.
+runs them on N warm bounded per-worktree servers. See `docs/OVERVIEW.md` for the shape, `docs/ARCHITECTURE.md`
+for the why, `docs/ARCHITECTURE.md` for the tuned config + limits.
 
 ## 1. Install (idempotent)
 ```bash
@@ -137,7 +137,7 @@ cap the smart auto-sizing then works *within*):
 `arxael up` with no flag, run by a human at a terminal, **asks** which of these you want; an agent/script
 gets the whole machine unless it passes a flag. `arxael status` and `/health` show what was resolved.
 
-## 5. Tuned config (from the limit-finding)
+## 5. Tuned config (from the limit-finding — `docs/ARCHITECTURE.md`)
 For many concurrent agents the throughput-tuned config is:
 - **Per-build parallelism scaled to cores** (each build should use the box; a 1-worker build caps it at ~40% CPU).
 - **`ARXAEL_PER_WORKTREE_HOME=true` (now the DEFAULT)** removes the shared-`GRADLE_USER_HOME` cross-process
@@ -157,7 +157,7 @@ This roughly doubles concurrent test throughput vs the untuned default.
 
 ## 5b. Merge orchestrator (branch → test → PR → merge to main)
 The daemon also lands many agents' PRs onto one shared `main`, fast and without conflicts (the auto-route
-design in `docs/ARCHITECTURE.md`). The agent-runner creates a bare repo holding
+design in `docs/ARCHITECTURE.md` / `docs/ARCHITECTURE.md`). The agent-runner creates a bare repo holding
 `main`, registers it once, then agents submit branch-tested PRs. All loopback, all on the warm substrate.
 ```bash
 # register the project — forwardDeps OPTIONAL: omit it and the daemon auto-discovers the module graph from

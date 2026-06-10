@@ -3,7 +3,7 @@ package dev.arxael.merge
 /**
  * Pure parser: from a build tool's failure output, name the MODULES whose tasks failed.
  *
- * The proven "a red module names the culprit PR for free" lever: when a merge
+ * The proven "a red module names the culprit PR for free" lever (docs/ARCHITECTURE.md): when a merge
  * gate fails, the failed module identifies the PR that touched it — so the orchestrator can land every
  * other PR and bounce only the culprit, from ONE incremental test, with no prefix-bisection re-queue churn.
  *
@@ -14,10 +14,12 @@ package dev.arxael.merge
  * and fall back to the safe per-PR path (never silently land a red merge).
  */
 object CulpritAttribution {
-    // "> Task :app:core:test FAILED"
-    private val TASK_FAILED = Regex("""Task (:[\w.:\-]+) FAILED""")
-    // "Execution failed for task ':app:core:test'."
-    private val EXEC_FAILED = Regex("""Execution failed for task '(:[\w.:\-]+)'""")
+    // "> Task :app:core:test FAILED" — ANCHORED at line start (Gradle prints these at column 0). Anchoring
+    // matters: a test's own stdout/stack-trace that echoes the literal "> Task :x FAILED" mid-line (a log
+    // assertion, a wrapped build) would otherwise inject :x as a culprit and bounce an innocent PR.
+    private val TASK_FAILED = Regex("""(?m)^> Task (:[\w.:\-]+) FAILED""")
+    // "Execution failed for task ':app:core:test'." — likewise anchored at line start.
+    private val EXEC_FAILED = Regex("""(?m)^Execution failed for task '(:[\w.:\-]+)'""")
 
     /** Distinct module paths (e.g. ":mod3", ":app:core") whose tasks failed; empty if unattributable. */
     fun failedModules(output: String?): Set<String> {

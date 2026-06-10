@@ -235,6 +235,41 @@ class MergeOrchestratorTest {
     }
 
     @Test
+    fun `batched attribution re-test widens scope so undeclared coupling can't land a red change`() {
+        // PR-A changes :mod1 with a break that, via UNDECLARED coupling (no declared edge :mod2 -> :mod1),
+        // fails :mod2's tests. PR-B owns :mod2. The full-batch gate (scope {:mod1,:mod2}) goes red on :mod2,
+        // so attribution blames B and bounces it. The re-test of the remainder [A] must gate over AT LEAST the
+        // modules that were red (:mod2) — NOT narrow to A's declared closure {:mod1}, which would miss the break
+        // and land A's red change. Proves main is never left red even under undeclared cross-module coupling.
+        val crossModuleGate = MergeGate { wt, modules, _ ->
+            val check = modules ?: allModules.toSet()
+            val mod1Broken = runCatching { Files.readString(wt.resolve("mod1/code.txt")).contains("BREAKS_DEP") }.getOrDefault(false)
+            val failed = check.filter { m ->
+                val ownBad = runCatching { Files.readString(wt.resolve("${dirOf(m)}/code.txt")).contains("BAD") }.getOrDefault(false)
+                ownBad || (m == ":mod2" && mod1Broken) // :mod2 only shows red when it's actually IN the gate scope
+            }.toSet()
+            GateResult(failed.isEmpty(), failed)
+        }
+        setup()
+        val integ = tmp.resolve("integ")
+        val gates = (0..1).map { tmp.resolve("gate$it") }
+        // independent modules, threshold 0 => every PR routes BATCHED; :mod1's declared closure is {:mod1} only
+        val router0 = MergeRouter(MergeRouter.reverseDeps(allModules.associateWith { emptySet<String>() }), threshold = 0)
+        orch!!.shutdown()
+        val ob = MergeOrchestrator(bare, integ, gates, router0, crossModuleGate, events, batchCap = 8).also { orch = it }
+
+        val a = createPr("a", ":mod1", "BREAKS_DEP")  // breaks :mod2 via undeclared coupling (no "BAD" -> own tests pass)
+        val b = createPr("b", ":mod2", "mod2 v2 ok")  // innocent owner of the failing module
+
+        ob.processBatch(listOf(a, b))
+
+        assertEquals(0, ob.snapshot()["landed"], "the real culprit A must NOT land its red change")
+        assertEquals("init", mainContent(":mod1"), "A's breaking change never reached main")
+        assertEquals("init", mainContent(":mod2"), "main is clean for :mod2 too")
+        assertTrue(crossModuleGate.test(integForVerify(), null, "final").green, "main must end green")
+    }
+
+    @Test
     fun `optimistic gate catches a change that breaks a DEPENDENT module (not just its own)`() {
         // :mod2 depends on :mod1, so :mod1's affected closure is {:mod1, :mod2} (size 2 <= threshold -> optimistic).
         // Gate rule: a change to :mod1 that writes "BREAKS_DEP" passes :mod1's own tests but FAILS :mod2's.

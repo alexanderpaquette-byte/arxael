@@ -74,4 +74,34 @@ class PrJournalTest {
         PrJournal(path).done("a") // recovered run finishes it
         assertEquals(emptyList(), PrJournal(path).pending())
     }
+
+    @Test
+    fun `a REUSED branch (submit-done-submit) is pending again - the second incarnation is not lost`() {
+        // Branch reuse is normal: an agent's PR is reverted/bounced (DONE), it fixes the SAME branch and
+        // resubmits. The second submission can optimistically LAND before its gate finishes; a crash here must
+        // re-gate it. An order-INDEPENDENT "submitted minus done" reduction would see the branch in `done` and
+        // wrongly drop it -> an unverified change stranded on main. pending() must treat the later SUBMIT as
+        // re-opening the branch.
+        val path = tmp.resolve("reuse")
+        val j = PrJournal(path)
+        j.submit(PullRequest("feat", ":mod1", agentId = "A"))
+        j.done("feat")                                   // first incarnation reverted/bounced
+        j.submit(PullRequest("feat", ":mod2", agentId = "A")) // resubmitted (now on a different module), still live
+        val pending = j.pending()
+        assertEquals(listOf("feat"), pending.map { it.branch }, "the re-submitted branch must be pending again")
+        assertEquals(":mod2", pending[0].module, "pending reflects the LATEST submission's metadata")
+        // and a fresh process reading the same file recovers it too (crash survival across the reuse)
+        assertEquals(listOf("feat"), PrJournal(path).pending().map { it.branch })
+    }
+
+    @Test
+    fun `submit order is preserved across a reuse`() {
+        val path = tmp.resolve("order")
+        val j = PrJournal(path)
+        j.submit(PullRequest("a", ":m"))
+        j.submit(PullRequest("b", ":m"))
+        j.done("a")
+        j.submit(PullRequest("a", ":m")) // a reused; should come AFTER b now (latest submit order)
+        assertEquals(listOf("b", "a"), j.pending().map { it.branch })
+    }
 }

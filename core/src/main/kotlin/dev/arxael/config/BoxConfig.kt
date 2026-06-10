@@ -62,7 +62,7 @@ data class BoxConfig(
      *  + a daemon-global read-only dep cache ([liveRoDepCache]) make it safe — per-worktree builds download
      *  into their own home, and freshly-downloaded deps are folded into the shared RO cache so re-downloads
      *  converge to ~zero (no Maven 429 at steady state). Set ARXAEL_PER_WORKTREE_HOME=false to restore the
-     *  shared home (the old default behavior). */
+     *  shared home (the old D4 behavior). */
     val perWorktreeHome: Boolean,
     /** Local Gradle installation used by the gradle adapter (offline, deterministic). */
     val gradleHome: Path,

@@ -57,8 +57,7 @@ def slice_teardown():
 
 # Workload profiles — the heavy tasks agents actually run, so density numbers are realistic.
 # NOTE: --rerun-tasks is NO LONGER baked in here — it's controlled by --cache-mode (below), which
-# decouples "do real work each task" from "store to the build cache each task"
-# (de-confound; the old `--rerun-tasks --build-cache` combo inflated the cache-lock signal).
+# decouples "do real work each task" from "store to the build cache each task".
 PROFILES = {
     "test":     {"tasks": ["test"], "args": ["--quiet"]},
     "coverage": {"tasks": ["test", "jacocoTestReport"], "args": ["--quiet"]},
@@ -70,7 +69,7 @@ PROFILES = {
 # toggles it via ARXAEL_BUILD_CACHE; the container arm passes the CLI flag directly). The shared
 # GRADLE_USER_HOME locks (fileHashes / journal-1 / modules-2) are exercised in ALL modes; build_cache
 # only adds the per-worktree build-cache STORE traffic on top — so realistic vs stress ISOLATES how
-# much of the contention is build-cache-store vs shared-home (de-confound).
+# much of the contention is build-cache-store vs shared-home.
 CACHE_MODES = {
     # realistic (headline): genuine recompile+retest each task, build cache OFF (no store hammering).
     "realistic":   {"args": ["--rerun-tasks"], "build_cache": False},
@@ -178,8 +177,7 @@ def run_warm(args, taskset_prefix):
         # Build cache toggled at the substrate (allowlist forbids cache flags as agent args).
         "ARXAEL_BUILD_CACHE": "true" if CACHE_MODES[args.cache_mode]["build_cache"] else "false",
         "ARXAEL_PER_WORKTREE_HOME": "true" if args.per_worktree_home else "false",
-        # PER-BUILD PARALLELISM (the fix): each build must parallelize to load the box
-        # (scale ALL settings to cores or you measure single-build IPC, not concurrency). Default each
+        # PER-BUILD PARALLELISM (the fix): each build must parallelize to load the box. Default each
         # build to --max-workers=cores so ONE build can saturate, then concurrency oversubscribes.
         "ARXAEL_BUILD_WORKERS": str(args.build_workers if args.build_workers else args.cores),
         # Parallel test forks inside a build (fixture reads BENCH_TEST_FORKS for maxParallelForks);
@@ -197,7 +195,7 @@ def run_warm(args, taskset_prefix):
     if args.mem_gb:
         # Capped run: the substrate's OWN memBound bounds concurrency to fit the budget — this IS
         # the product feature under test. No OS cap needed: the executor self-limits and we MEASURE
-        # that peak RAM stays under the budget (if it doesn't, that's a real finding).
+        # that peak RAM stays under the budget (if it doesn't, that's a real D7 finding).
         env["ARXAEL_USABLE_RAM_MB"] = str(int(args.mem_gb * 1024))
         env["ARXAEL_PER_BUILD_MB"] = str(args.per_build_mb)
     else:
@@ -488,7 +486,7 @@ def main():
                     help="EXPERIMENTAL: per-worktree Gradle user home (removes the shared-home cache lock; limit-finding)")
     ap.add_argument("--ro-dep-cache", default="",
                     help="shared read-only dependency cache dir (GRADLE_RO_DEP_CACHE); pairs with --per-worktree-home "
-                         "to remove the lock AND avoid re-resolving deps per home (an RO-shared + per-wt-writable)")
+                         "to remove the lock AND avoid re-resolving deps per home (a RO-shared + per-wt-writable)")
     ap.add_argument("--build-workers", type=int, default=0,
                     help="per-build gradle --max-workers (0 = cores; each build parallelizes to load the box)")
     ap.add_argument("--test-forks", type=int, default=0,

@@ -7,7 +7,7 @@ import kotlin.test.assertEquals
  * The auto-route routing brain (closure sizing + optimistic-vs-batched). These are the cases the merge
  * orchestrator's soundness rides on: route a hub-module PR optimistic and a bad one cascades; route a
  * leaf PR batched and you throw away the instant-landing win. The three graph shapes mirror the campaign's
- * tested topologies (independent / deep chain / wide DAG).
+ * tested topologies (independent / deep chain / wide DAG — docs/ARCHITECTURE.md).
  */
 class MergeRouterTest {
 

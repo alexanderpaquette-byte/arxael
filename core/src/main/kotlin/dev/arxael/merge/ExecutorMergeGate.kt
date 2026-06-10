@@ -28,6 +28,7 @@ class ExecutorMergeGate(
                 adapter = adapter,
                 worktree = worktree.toString(),
                 tasks = gateTasks(adapter, modules),
+                args = gateArgs(adapter),
                 agentId = "merge-gate",
                 priority = "high",
             ),
@@ -49,6 +50,12 @@ class ExecutorMergeGate(
             modules.isNullOrEmpty() -> listOf("test")          // gradle: full lifecycle test
             else -> modules.map { "$it:test" }                 // gradle: incremental, module-scoped
         }
+
+        /** Gate-only Gradle args. `--continue` makes a multi-module gate run EVERY module's tests even after the
+         *  first fails, so [CulpritAttribution] sees all failed modules in ONE pass (else attribution under-reports
+         *  and a second bad PR slips into the re-tested remainder). No-op for non-gradle adapters. */
+        fun gateArgs(adapter: String): List<String> =
+            if (adapter == "gradle") listOf("--continue") else emptyList()
 
         /**
          * Pure mapping from an executor outcome to a gate verdict (extracted so it's unit-testable without a

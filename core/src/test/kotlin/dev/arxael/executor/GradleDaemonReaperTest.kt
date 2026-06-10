@@ -43,4 +43,28 @@ class GradleDaemonReaperTest {
             ),
         )
     }
+
+    @Test
+    fun `NOT ours - a SIBLING instance whose stateDir shares our prefix (path boundary, not string prefix)`() {
+        // "/home/me/.arxael-ci" starts-with the raw string "/home/me/.arxael" but is a DIFFERENT instance's
+        // stateDir. A bare string-prefix match would reap the sibling's daemon mid-build; the boundary match must not.
+        assertFalse(
+            GradleDaemonReaper.isOurDaemon(
+                cmdline = "java ... org.gradle.launcher.daemon.bootstrap.GradleDaemon 8.10.2",
+                fdTargets = listOf("/home/me/.arxael-ci/worktrees/x/gradle-user-home/daemon/8.10.2/daemon-2.out.log"),
+                marker = marker,
+            ),
+        )
+    }
+
+    @Test
+    fun `ours regardless of a trailing separator on the marker`() {
+        assertTrue(
+            GradleDaemonReaper.isOurDaemon(
+                cmdline = "org.gradle.launcher.daemon.bootstrap.GradleDaemon",
+                fdTargets = listOf("$marker/worktrees/abc/x.log"),
+                marker = "$marker/",
+            ),
+        )
+    }
 }

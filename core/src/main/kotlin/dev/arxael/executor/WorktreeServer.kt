@@ -49,7 +49,9 @@ class WorktreeServer(
      *  serialized: it either finished before us, or sees [closed] and bails to a fresh server. */
     fun close() {
         lock.lock()
-        try { closed = true; session.close() } finally { lock.unlock() }
+        // Idempotent: evictFaulted, maybeEvict, recoverUnhealthy and shutdown can race to close the same server;
+        // call session.close() exactly once so an adapter session that isn't close-idempotent isn't double-closed.
+        try { if (!closed) { closed = true; session.close() } } finally { lock.unlock() }
     }
 }
 

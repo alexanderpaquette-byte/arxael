@@ -165,6 +165,13 @@ class InvokeServer(
         val body = readBody(ex) ?: return respond(ex, 413, """{"ok":false,"error":"request body too large"}""")
         val spec = try { json.decodeFromString<MergeSubmitSpec>(body) }
             catch (e: Exception) { return respond(ex, 400, """{"ok":false,"error":${jsonStr("bad request: ${e.message}")}}""") }
+        when (val v = dev.arxael.merge.MergeArgPolicy.check(spec.branch, spec.module, spec.agentId)) {
+            is dev.arxael.merge.MergeArgPolicy.Rejected -> {
+                events.emit("merge_submit_rejected", mapOf("reason" to v.reason, "agent" to spec.agentId))
+                return respond(ex, 422, """{"ok":false,"error":${jsonStr(v.reason)}}""")
+            }
+            dev.arxael.merge.MergeArgPolicy.Ok -> { /* fall through */ }
+        }
         return if (merge.submit(spec.branch, spec.module, spec.agentId)) {
             respond(ex, 200, """{"ok":true,"queued":${jsonStr(spec.branch)}}""")
         } else {

@@ -4,7 +4,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /**
- * The load-bearing bound logic (D3 + D7): maxConcurrent = max(1, min(coreBound, memBound)),
+ * The load-bearing bound logic: maxConcurrent = max(1, min(coreBound, memBound)),
  * with override winning. These are the cases that must never silently regress — a wrong bound
  * either oversubscribes RAM (OOM-wedge) or starves the box.
  */

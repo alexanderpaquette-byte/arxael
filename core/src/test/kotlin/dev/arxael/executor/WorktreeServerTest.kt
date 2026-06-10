@@ -10,7 +10,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * The core invariant in the small: one warm server serializes ONE invocation at a time, exposes a `busy`
+ * The invariant in the small: one warm server serializes ONE invocation at a time, exposes a `busy`
  * flag (so the watchdog can skip it), delegates `healthy`, and closes its session exactly once.
  */
 class WorktreeServerTest {

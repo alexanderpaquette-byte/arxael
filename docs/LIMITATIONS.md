@@ -128,7 +128,7 @@ dependency graphs, and many agents sustained over hours.
 - **Mitigation (in place):** the design's soundness rests on branch-gating + the batched fallback, which
   don't depend on scale; the adaptive governor is built precisely to self-correct as builds grow heavier
   (the answer to "what happens as the project grows"). Every striking result was re-tested before being
-  trusted (see docs/ARCHITECTURE.md). **Now also validated in an ISOLATED CONTAINER**
+  trusted (see ARCHITECTURE.md). **Now also validated in an ISOLATED CONTAINER**
   (`bench/realworld_container.sh`): a clean `gradle:8.10.2-jdk21` container with the kit **built from source
   inside it**, a real 8-module project (240 classes, real JUnit5/pitest/JaCoCo deps), 8 agents landing PRs on
   **fresh per-worktree gradle homes doing real Maven Central downloads** — 29 landed, 13.7 merges/min, **0

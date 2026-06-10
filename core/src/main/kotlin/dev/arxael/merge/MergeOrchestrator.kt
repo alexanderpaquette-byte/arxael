@@ -10,8 +10,8 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 
 /**
- * The merge orchestrator — the productionized winner from the limit-finding campaign,
- * modeled on `bench/merge_sim.py`.
+ * The merge orchestrator — the productionized winner from the limit-finding campaign
+ * modeled on `bench/merge_sim.py` into `core/`.
  *
  * What it does: many trusted agents submit branch-tested PRs; the orchestrator integrates them onto a
  * shared `main`, fast and without conflicts, never leaving main broken. Per PR it AUTO-ROUTES by the
@@ -265,7 +265,13 @@ class MergeOrchestrator(
     }
 
     // ---- batched gate-then-land: one incremental test, never lands red, attribute culprits on red ----
-    private fun processBatched(prs: List<PullRequest>) {
+    //
+    // [inheritedFailScope]: when a parent red batch re-tests a subset (after attribution) or a bisected half,
+    // the re-test gate scope must INCLUDE the modules that were red in the parent — otherwise narrowing to the
+    // subset's own declared closure can dodge a break caused via UNDECLARED coupling (PR-A breaks module M that
+    // PR-B owns; bounce B, re-test A over A's closure which excludes M -> A's red change lands green). Widening
+    // the re-test to ⊇ the parent's failed modules keeps the re-test at least as strong as the gate that failed.
+    private fun processBatched(prs: List<PullRequest>, inheritedFailScope: Set<String>? = null) {
         val merged = ArrayList<PullRequest>(prs.size)
         var mainBase = ""                               // the main commit this batch is merged onto + tested against
         val head = synchronized(gitLock) {
@@ -292,8 +298,9 @@ class MergeOrchestrator(
             return
         }
         mIntegTests.incrementAndGet()
+        val scope = widenScope(batchScope(merged, changed), inheritedFailScope)
         val res = try {
-            gate.test(integ, batchScope(merged, changed), "integ-${merged.first().branch}-x${merged.size}")
+            gate.test(integ, scope, "integ-${merged.first().branch}-x${merged.size}")
         } catch (e: Exception) {
             // A gate fault must not lose the batch (pulled from the queue, not yet landed). Re-enqueue + retry.
             mErrors.incrementAndGet()
@@ -325,6 +332,9 @@ class MergeOrchestrator(
         // Culprit attribution is only trustworthy if EVERY PR's module is known: a null-module PR could be
         // the real cause yet get blamed on another PR that happens to own a failed module. If any module is
         // unknown, skip attribution and use the safe per-PR fallback.
+        // The modules that were RED in THIS gate — every downstream re-test (remainder or bisected half) must
+        // gate over AT LEAST these, so a break carried by undeclared coupling can't escape a narrowed re-test.
+        val failScope = closureScopeOf(res.failedModules)
         val attributable = merged.none { it.module == null }
         val culprits = if (attributable) merged.filter { it.module in res.failedModules } else emptyList()
         if (culprits.isNotEmpty() && culprits.size < merged.size) {
@@ -334,7 +344,7 @@ class MergeOrchestrator(
                 journal?.done(it.branch)
                 events.emit("merge_bounce_culprit", mapOf("branch" to it.branch, "module" to it.module))
             }
-            processBatched(merged.filterNot { it in culprits })
+            processBatched(merged.filterNot { it in culprits }, inheritedFailScope = failScope)
         } else {
             // Unattributable red batch (e.g. non-gradle / null-module: no module graph to blame). The old
             // fallback re-gated every PR INDIVIDUALLY — O(n) slow gates, which collapses throughput on real
@@ -342,10 +352,22 @@ class MergeOrchestrator(
             // (each processBatched re-merges from main, so it's self-contained + sound). A clean half lands in
             // ONE gate; a red half recurses. Cost is O(k·log n) gates for k bad PRs, not O(n).
             val mid = merged.size / 2
-            processBatched(merged.subList(0, mid).toList())
-            processBatched(merged.subList(mid, merged.size).toList())
+            processBatched(merged.subList(0, mid).toList(), inheritedFailScope = failScope)
+            processBatched(merged.subList(mid, merged.size).toList(), inheritedFailScope = failScope)
         }
     }
+
+    /** Union of [scope] with [extra]; null ("full project") dominates — a full gate already covers everything. */
+    private fun widenScope(scope: Set<String>?, extra: Set<String>?): Set<String>? = when {
+        scope == null -> null
+        extra.isNullOrEmpty() -> scope
+        else -> scope + extra
+    }
+
+    /** The affected closures of [modules] plus the modules themselves (a failed module name from the gate may
+     *  be outside the router's known set; include it directly so it's still in the widened re-test scope). */
+    private fun closureScopeOf(modules: Collection<String>): Set<String> =
+        modules.flatMap { runCatching { router.affectedClosure(it) }.getOrDefault(emptySet()) }.toSet() + modules
 
     /**
      * Compare-and-set land for a batch: set main = [head] ONLY if main is still [mainBase] — i.e. it hasn't
@@ -441,8 +463,15 @@ class MergeOrchestrator(
         shutDown = true // reject any further submits immediately (before the loop fully stops)
         running = false
         loop?.join(2000)
+        // Drain in-flight gates BEFORE returning: a gate build still running when the executor shuts down could
+        // create a warm server AFTER the executor cleared its map (leaked, then reaped mid-build). awaitQuiescent
+        // waits for the queue + async gates to settle; then stop the pool, escalating past a hard deadline.
+        awaitQuiescent(GATE_DRAIN_MS)
         gatePool.shutdown()
-        gatePool.awaitTermination(5, TimeUnit.SECONDS)
+        if (!gatePool.awaitTermination(GATE_DRAIN_MS, TimeUnit.MILLISECONDS)) {
+            gatePool.shutdownNow()
+            events.emit("merge_shutdown_gate_timeout", emptyMap())
+        }
     }
 
     fun snapshot(): Map<String, Any> {
@@ -472,5 +501,6 @@ class MergeOrchestrator(
     private companion object {
         const val MAX_TTL_SAMPLES = 2048 // recent time-to-land window for the p50 metric (bounds memory)
         const val MAX_GATE_RETRIES = 5   // give up re-queuing a PR after this many inconclusive/fault gates
+        const val GATE_DRAIN_MS = 30_000L // shutdown: how long to let in-flight gates settle before forcing the pool down
     }
 }

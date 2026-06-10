@@ -57,4 +57,23 @@ class CulpritAttributionTest {
         // ":test FAILED" -> module would be root (""), which we can't attribute -> empty (all-suspect).
         assertEquals(emptySet(), CulpritAttribution.failedModules("> Task :test FAILED"))
     }
+
+    @Test
+    fun `a Task-FAILED echoed inside test stdout (not at line start) does NOT bounce an innocent module`() {
+        // A test logs / asserts on a build-log string mid-line; only :real actually failed. Anchoring the regex
+        // to line start prevents attributing :innocent and bouncing its (good) PR.
+        val out = buildString {
+            appendLine("> Task :real:test FAILED")
+            appendLine("    com.example.LogTest > formats line: expected \"> Task :innocent:test FAILED\" but was ...")
+            appendLine("some prose mentioning Execution failed for task ':alsoInnocent:test' in passing")
+            appendLine("Execution failed for task ':real:test'.")
+        }
+        assertEquals(setOf(":real"), CulpritAttribution.failedModules(out))
+    }
+
+    @Test
+    fun `indented or prefixed Task lines (stack frames, log wrappers) are not attributed`() {
+        val out = "\tat builder.run(> Task :phantom:test FAILED)\n   > Task :alsoNot:test FAILED"
+        assertEquals(emptySet(), CulpritAttribution.failedModules(out))
+    }
 }

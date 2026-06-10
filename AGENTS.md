@@ -84,6 +84,6 @@ scrape target (dashboard in `ops/`). `scripts/arxael logs` prints recent activit
 audit trail is `~/.arxael/events.jsonl`.
 
 ## Want the why / the limits / the design?
-`docs/ARCHITECTURE.md` (how everything works — components, flows, API, invariants, the headline numbers +
-recommended design, and how merging-without-conflicts was designed and measured), `docs/OVERVIEW.md` (the
-shape), `docs/SETUP.md` (all knobs).
+`docs/ARCHITECTURE.md` (how everything works — components, flows, API, invariants), `docs/ARCHITECTURE.md`
+(headline numbers + recommended design), `docs/OVERVIEW.md` (the shape), `docs/ARCHITECTURE.md` (how
+merging-without-conflicts was designed and measured), `docs/SETUP.md` (all knobs).

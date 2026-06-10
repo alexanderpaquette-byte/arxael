@@ -15,7 +15,7 @@ import kotlin.test.assertTrue
 
 /**
  * The executor's bounded-concurrency gate and the reserved high-priority lane (added for the
- * merge-gate workflow: "high" landings must never be starved by a flood
+ * merge-gate workflow — "high" landings must never be starved by a flood
  * of "normal" branch-tests). These paths are pure substrate correctness, so they are unit-tested
  * here against the NoopAdapter (its `sleepMs=` arg holds a permit for a deterministic window) rather
  * than left to integration coverage. A regression here either wedges the box (no fail-closed) or lets
@@ -195,6 +195,41 @@ class WarmExecutorConcurrencyTest {
             assertEquals(InvokeStatus.SUCCESS.name, ex.submit(spec(tmp.resolve("g-3").toString())).status,
                 "after grow to 3, a third concurrent build must be admitted")
             hs.forEach { it.join() }
+        } finally { ex.shutdown() }
+    }
+
+    @Test
+    fun `eviction reclaims orphaned worktree output-bases (bounded disk on a long-running daemon)`() {
+        // warmServers=1 so a 2nd distinct worktree forces an eviction (which runs the worktree GC).
+        val cfg = cfg(maxConcurrent = 4, reservedHigh = 0, acquireTimeoutMs = 1000).copy(warmServers = 1)
+        val ex = WarmExecutor(cfg, registry, events)
+        try {
+            // An output-base left by a PRIOR worktree that's no longer warm, untouched long ago (past the GC TTL).
+            val worktrees = tmp.resolve("worktrees")
+            val orphan = worktrees.resolve("deadbeefdeadbeef")
+            Files.createDirectories(orphan)
+            Files.writeString(orphan.resolve("caches"), "stale")
+            Files.setLastModifiedTime(orphan, java.nio.file.attribute.FileTime.fromMillis(System.currentTimeMillis() - 20 * 60 * 1000L))
+            assertTrue(Files.exists(orphan))
+
+            // Drive two distinct worktrees: the second create pushes the pool over warmServers=1 -> eviction -> GC.
+            ex.submit(spec(tmp.resolve("wtA").toString()))
+            ex.submit(spec(tmp.resolve("wtB").toString()))
+
+            assertTrue(!Files.exists(orphan), "the orphaned, long-untouched output-base must be reclaimed by eviction GC")
+        } finally { ex.shutdown() }
+    }
+
+    @Test
+    fun `a freshly-touched orphan within the GC TTL is preserved (no deleting an in-flight create)`() {
+        val cfg = cfg(maxConcurrent = 4, reservedHigh = 0, acquireTimeoutMs = 1000).copy(warmServers = 1)
+        val ex = WarmExecutor(cfg, registry, events)
+        try {
+            val fresh = tmp.resolve("worktrees").resolve("freshdir00000000")
+            Files.createDirectories(fresh) // mtime = now -> within the TTL -> must be spared
+            ex.submit(spec(tmp.resolve("wtA").toString()))
+            ex.submit(spec(tmp.resolve("wtB").toString()))
+            assertTrue(Files.exists(fresh), "a recently-touched dir (possible in-flight create) must NOT be GC'd")
         } finally { ex.shutdown() }
     }
 }

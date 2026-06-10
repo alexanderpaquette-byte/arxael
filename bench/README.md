@@ -52,7 +52,7 @@ bash bench/realworld_oss.sh 16 12 300  # isolated container + REAL google/gson, 
 bash bench/install_container.sh     # clean ubuntu -> one command -> READY -> arxael verify (fresh-box claim)
 ```
 
-Headline results (see `docs/ARCHITECTURE.md`): real gson run = 48/48 good
+Headline results (see `docs/ARCHITECTURE.md` "Real-world & robustness validation"): real gson run = 48/48 good
 PRs landed, 2/2 bad caught, 0 reverts/errors, main green; fresh-box READY in 70s; per-worktree-home A/B
 +46–83% merges/min. **Honest note on `ARXAEL_MERGE_BATCH_CAP`:** raising it (8→16) is a no-op at ~16
 *closed-loop* agents (the queue stays shallow, so agent-count × gate-latency bounds throughput, not the cap);

@@ -1,7 +1,7 @@
 # arxael-dev-kit — System Overview (meta map)
 
-> Simplified, generated map of how the pieces fit together. The authoritative reference for *why* is
-> [docs/ARCHITECTURE.md](ARCHITECTURE.md); this is just the shape.
+> Simplified, generated map of how the pieces fit together. The authoritative reference is
+> [ARCHITECTURE.md](ARCHITECTURE.md); this doc only covers the shape.
 >
 > 🌐 中文版本: [OVERVIEW.zh-CN.md](OVERVIEW.zh-CN.md)
 
@@ -126,7 +126,7 @@ flowchart LR
 
 The warm executor is the foundation. Two layers ride on it to make the product the full thing —
 *many agents, one project, branch → test → PR → **merge to main**, fast and without conflicts, on a box
-that sizes itself*. Deep dives: [docs/ARCHITECTURE.md](ARCHITECTURE.md) (the why + numbers), [SETUP.md](SETUP.md).
+that sizes itself*. Deep dives: [ARCHITECTURE.md](ARCHITECTURE.md), [SETUP.md](SETUP.md).
 
 - 🟣 **Merge orchestrator** (`dev.arxael.merge`, surface `/merge/{register,submit,status}`). Agents submit
   branch-tested PRs; the orchestrator lands them on a shared `main` without conflicts. It **auto-routes**

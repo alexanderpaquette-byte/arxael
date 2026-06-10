@@ -63,10 +63,14 @@ class AdaptiveGovernor(
     /** One control step. Visible for testing; normally driven by the loop. */
     fun tick() {
         val mem = memSource() ?: return
-        val usedMb = mem.totalMb - mem.availMb
+        val usedMb = (mem.totalMb - mem.availMb).coerceAtLeast(0) // a garbled/overcommit sensor must not drive it negative
         val inFlight = executor.inFlight()
         if (inFlight == 0) {
-            baselineMb = if (baselineMb <= 0L) usedMb else minOf(baselineMb, usedMb) // idle floor = OS + daemon
+            // Idle floor (OS + daemon) as an EWMA, NOT an unbounded running min: one transient low reading (a
+            // page-cache reclaim spiking MemAvailable for a single tick) under `minOf` would PERMANENTLY depress
+            // the baseline, inflating every future per-build footprint sample and starving the bound to its floor
+            // for the daemon's life. An EWMA self-heals — one dip moves it ≤10% and later normal ticks restore it.
+            baselineMb = if (baselineMb <= 0L) usedMb else (baselineMb * 9 + usedMb) / 10
         } else if (baselineMb > 0L) {
             // Only learn the per-build footprint once we have a real idle baseline. If the first tick fires
             // while builds are already running (busy startup), baselineMb is still 0 and `usedMb - 0` would be

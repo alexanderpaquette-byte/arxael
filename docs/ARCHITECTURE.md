@@ -1,7 +1,7 @@
 # ARCHITECTURE — how everything works (current, as-built)
 
 This is the authoritative reference for the **shipped system** as it stands now. (For *why* the design is
-what it is — the experiments, dead-ends, and numbers — this doc covers it. For a gentle visual map, [OVERVIEW.md](OVERVIEW.md). To just run it,
+what it is — the experiments, dead-ends, and numbers. For a gentle visual map, see [OVERVIEW.md](OVERVIEW.md). To just run it,
 [../QUICKSTART.md](../QUICKSTART.md) / [../AGENTS.md](../AGENTS.md).) For what this system deliberately does
 **not** do — and the trust model it assumes — see [LIMITATIONS.md](LIMITATIONS.md).
 
@@ -163,4 +163,4 @@ the auto-sizing explanation: [SETUP.md](SETUP.md).
 - **Run it:** [../QUICKSTART.md](../QUICKSTART.md) (fresh box) · [../AGENTS.md](../AGENTS.md) (agents) · `scripts/arxael` (daily)
 - **Configure it:** [SETUP.md](SETUP.md) (every knob + how auto-sizing works)
 - **How it works (this doc):** components, flows, API, invariants
-- **Why (research + numbers + decisions):** this doc · **Shape/visual:** [OVERVIEW.md](OVERVIEW.md)
+- **Shape / visual map:** [OVERVIEW.md](OVERVIEW.md)

@@ -60,22 +60,28 @@ class PrJournal(private val path: Path) {
         } catch (_: Exception) { /* best-effort: the old journal is intact (atomic), so this just retries later */ }
     }
 
-    /** PRs that were submitted but never reached a terminal outcome, in submit order. */
+    /** PRs that were submitted but never reached a terminal outcome, in submit order.
+     *
+     *  Order-sensitive (a branch is pending iff its LAST event is SUBMIT): a branch name can be REUSED —
+     *  SUBMIT, DONE (reverted/bounced), then SUBMIT again for the fixed branch. An order-independent
+     *  "submitted minus done" reduction would see the branch in `done` and wrongly drop the live second
+     *  incarnation — stranding an optimistically-landed-but-unverified change on main (the exact soundness
+     *  hole this journal exists to close). So a SUBMIT seen after a DONE RE-OPENS the branch. */
     @Synchronized
     fun pending(): List<PullRequest> {
         if (!Files.exists(path)) return emptyList()
-        val submitted = LinkedHashMap<String, PullRequest>()
-        val done = HashSet<String>()
+        val open = LinkedHashMap<String, PullRequest>() // branch -> its live (last) submission; absent => terminal
         for (line in runCatching { Files.readAllLines(path) }.getOrDefault(emptyList())) {
             val p = line.split("\t")
             when (p.getOrNull(0)) {
                 "SUBMIT" -> if (p.size >= 4) {
-                    submitted[p[1]] = PullRequest(branch = p[1], module = p[2].ifEmpty { null }, agentId = p[3].ifEmpty { null })
+                    open.remove(p[1]) // drop any prior incarnation so re-insert restores submit ORDER
+                    open[p[1]] = PullRequest(branch = p[1], module = p[2].ifEmpty { null }, agentId = p[3].ifEmpty { null })
                 }
-                "DONE" -> p.getOrNull(1)?.let { done.add(it) }
+                "DONE" -> p.getOrNull(1)?.let { open.remove(it) }
             }
         }
-        return submitted.filterKeys { it !in done }.values.toList()
+        return open.values.toList()
     }
 
     private companion object {

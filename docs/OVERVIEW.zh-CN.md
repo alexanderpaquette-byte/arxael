@@ -1,7 +1,7 @@
 # arxael-dev-kit — 系统总览（概念地图）
 
 > 各部分如何组合在一起的简化地图（自动生成）。关于*为什么*这样做，请以
-> [docs/ARCHITECTURE.md](ARCHITECTURE.md) 为准；本文只讲结构。
+> [ARCHITECTURE.md](ARCHITECTURE.md) 为准；本文只讲结构。
 >
 > 🌐 English version: [OVERVIEW.md](OVERVIEW.md)
 
@@ -120,7 +120,7 @@ flowchart LR
 ## 0b. 执行器之上：工作流层 + 自适应层（建于其上）
 
 常驻执行器是地基。两层建于其上，让产品成为完整形态——*许多智能体、一个项目，开分支 → 测试 → PR →
-**合并进 main**，又快又不冲突，且机器自动调整规模*。深入阅读：[docs/ARCHITECTURE.md](ARCHITECTURE.md)（为什么 + 数据）、[SETUP.md](SETUP.md)。
+**合并进 main**，又快又不冲突，且机器自动调整规模*。深入阅读：[ARCHITECTURE.md](ARCHITECTURE.md)、[SETUP.md](SETUP.md)。
 
 - 🟣 **合并编排器（Merge orchestrator）**（`dev.arxael.merge`，接口 `/merge/{register,submit,status}`）。
   智能体提交经过分支测试的 PR；编排器把它们无冲突地落到共享的 `main` 上。它按每个 PR 的**依赖闭包大小**
@@ -307,7 +307,7 @@ flowchart TB
 ```
 
 ### 烙进运行时的关键不变量
-- **每工作树独立的 Gradle home 现为默认（D8）**——去掉了把并发卡在 ~8 的共享 home 跨进程缓存锁；
+- **每工作树独立的 Gradle home 现为默认**——去掉了把并发卡在 ~8 的共享 home 跨进程缓存锁；
   机器从“被锁限制”变为“被 CPU 限制”。
 - **共享*只读*依赖缓存**（`GRADLE_RO_DEP_CACHE`）——每工作树 home 不重复下载；自填充的 consolidator
   让重复下载收敛到 ~0（关闭 Maven-429 阻塞点）。

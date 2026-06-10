@@ -6,6 +6,7 @@ import dev.arxael.eventlog.EventLog
 import dev.arxael.protocol.InvokeOutcome
 import dev.arxael.protocol.InvokeSpec
 import dev.arxael.protocol.InvokeStatus
+import java.nio.file.Files
 import java.nio.file.Path
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
@@ -39,6 +40,8 @@ class WarmExecutor(
     private val serverSeq = AtomicInteger(0)
     private val inFlight = AtomicInteger(0)
     private val worktreesRoot: Path = config.stateDir.resolve("worktrees")
+    private val resizeLock = Any() // makes the two-semaphore resize a single atomic step (reserved-lane invariant)
+    @Volatile private var shuttingDown = false // set first in shutdown(); rejects new work + blocks server resurrection
 
     // Recent build durations, so the overload timeout adapts to how long builds actually take.
     private val durations = DurationTracker()
@@ -85,13 +88,23 @@ class WarmExecutor(
      * invariant (normal lane = target - reservedHigh). Graceful: in-flight builds are never killed.
      */
     fun setConcurrencyTarget(target: Int) {
-        permits.adjustTo(target)
-        normalPermits.adjustTo(maxOf(1, target - config.reservedHigh))
+        // Adjust BOTH semaphores under one lock so the reserved-lane invariant (normal = global - reservedHigh)
+        // never has a transient window where a racing acquire sees a mismatched pair.
+        synchronized(resizeLock) {
+            permits.adjustTo(target)
+            normalPermits.adjustTo(maxOf(1, target - config.reservedHigh))
+        }
     }
 
     fun servers(): Collection<WorktreeServer> = servers.values
 
     fun submit(spec: InvokeSpec): InvokeOutcome {
+        if (shuttingDown) {
+            return InvokeOutcome(
+                ok = false, status = InvokeStatus.REJECTED.name, server = "-",
+                queueMs = 0, runMs = 0, output = "", message = "executor is shutting down",
+            )
+        }
         if (registry.get(spec.adapter) == null) {
             return InvokeOutcome(
                 ok = false, status = InvokeStatus.REJECTED.name, server = "-",
@@ -133,6 +146,13 @@ class WarmExecutor(
         try {
             var evictRetries = 0
             while (true) {
+                if (shuttingDown) {
+                    // Shutdown cleared the server map; do NOT resurrect a server (it would leak, never closed).
+                    return InvokeOutcome(
+                        ok = false, status = InvokeStatus.ERROR.name, server = "-",
+                        queueMs = queueMs, runMs = 0, output = "", message = "executor is shutting down",
+                    )
+                }
                 val server = serverFor(key, spec)
                 val sb = StringBuilder()
                 val runStart = System.nanoTime()
@@ -185,8 +205,7 @@ class WarmExecutor(
     }
 
     private fun serverFor(key: String, spec: InvokeSpec): WorktreeServer {
-        servers[key]?.let { return it }
-        val server = servers.computeIfAbsent(key) {
+        val server = servers[key] ?: servers.computeIfAbsent(key) {
             val adapter = registry.get(spec.adapter)!!
             val outputBase = worktreesRoot.resolve(hash(key))
             val id = "ws-${serverSeq.incrementAndGet()}-${spec.adapter}"
@@ -194,11 +213,10 @@ class WarmExecutor(
             val session = adapter.open(Path.of(canonical(spec.worktree)), outputBase, config)
             WorktreeServer(id, key, session)
         }
-        // LRU eviction runs OUTSIDE computeIfAbsent: modifying the map inside its own mapping function
-        // violates ConcurrentHashMap's contract (deadlock / IllegalStateException risk). This only bites
-        // once servers.size exceeds warmServers (i.e. agents > cores) — the campaign never hit it because
-        // the bench pinned warmServers = max(agents, cores). The just-created server is the newest, so it
-        // is never the eviction victim.
+        // LRU eviction runs OUTSIDE computeIfAbsent (modifying the map inside its own mapping function violates
+        // ConcurrentHashMap's contract). Called on EVERY lookup, not just cache MISSES: over-cap is a function of
+        // total live keys, not miss rate, so a hot working set permanently above the cap must still be trimmed.
+        // maybeEvict early-returns cheaply when at/under cap. The just-fetched server is freshest -> never a victim.
         maybeEvict()
         return server
     }
@@ -229,6 +247,35 @@ class WarmExecutor(
         // !busy check is necessarily racy) — closing under `synchronized(servers)` would stall every other
         // map op for a whole build. A racing run() sees the `closed` flag and retries a fresh server.
         victims.forEach { try { it.close() } catch (_: Exception) { /* discarded anyway */ } }
+        gcOrphanedWorktrees() // reclaim disk from output-bases the eviction just orphaned
+    }
+
+    /**
+     * Reclaim disk from per-worktree output-bases (gradle homes, project/build caches) that are no longer
+     * backed by a warm server — otherwise a long-running daemon working across many branches accumulates one
+     * full gradle home per distinct worktree forever and eventually fills the disk. Race-safe: a directory is
+     * deleted only when its key is NOT currently mapped AND it hasn't been touched within [WORKTREE_GC_TTL_MS].
+     * The TTL covers the create window — [serverFor]'s `adapter.open` bumps the dir's mtime before the server
+     * lands in the map, so an in-flight creation is never deleted out from under itself; once mapped, the
+     * live-key check covers it. A re-seen worktree simply re-warms (cheap via the shared RO dep cache).
+     */
+    private fun gcOrphanedWorktrees() {
+        if (!Files.isDirectory(worktreesRoot)) return
+        val liveDirs = servers.keys.mapTo(HashSet()) { hash(it) }
+        val cutoff = System.currentTimeMillis() - WORKTREE_GC_TTL_MS
+        runCatching {
+            Files.list(worktreesRoot).use { stream ->
+                stream.forEach { dir ->
+                    val name = dir.fileName.toString()
+                    if (name in liveDirs) return@forEach
+                    val touchedRecently = runCatching { Files.getLastModifiedTime(dir).toMillis() > cutoff }.getOrDefault(true)
+                    if (touchedRecently) return@forEach
+                    if (runCatching { dir.toFile().deleteRecursively() }.getOrDefault(false)) {
+                        events.emit("worktree_gc", mapOf("dir" to name))
+                    }
+                }
+            }
+        }
     }
 
     /**
@@ -255,9 +302,20 @@ class WarmExecutor(
     }
 
     fun shutdown() {
-        synchronized(servers) {
-            servers.values.forEach { it.close() }
-            servers.clear()
+        shuttingDown = true // reject new submits + block server resurrection from any in-flight retry
+        // Snapshot + clear UNDER the monitor, then close OUTSIDE it (see maybeEvict): close() can block on an
+        // in-flight build, and holding the monitor through that would stall every concurrent map op. LOOP it: a
+        // submit that passed the shuttingDown guard just before it flipped can still create one server after the
+        // clear; re-snapshot until the map stays empty so no straggler server (and its daemon) leaks past shutdown.
+        var rounds = 0
+        while (true) {
+            val toClose = synchronized(servers) {
+                val snapshot = servers.values.toList()
+                servers.clear()
+                snapshot
+            }
+            toClose.forEach { try { it.close() } catch (_: Exception) { /* tearing down */ } }
+            if (toClose.isEmpty() || ++rounds >= 5) break
         }
     }
 
@@ -272,5 +330,6 @@ class WarmExecutor(
 
     private companion object {
         const val MAX_EVICT_RETRIES = 3 // bound the fetch-a-fresh-server retry after a racing eviction
+        const val WORKTREE_GC_TTL_MS = 10 * 60 * 1000L // leave an output-base alone if touched within 10 min (create-window safety)
     }
 }

@@ -53,6 +53,12 @@ object GradleDaemonReaper {
      * main class) AND at least one of its open files ([fdTargets]) lives under our [marker] (stateDir). This
      * is what keeps the reaper from ever touching unrelated Gradle work on the box.
      */
-    fun isOurDaemon(cmdline: String, fdTargets: List<String>, marker: String): Boolean =
-        cmdline.contains("GradleDaemon") && fdTargets.any { it.startsWith(marker) }
+    fun isOurDaemon(cmdline: String, fdTargets: List<String>, marker: String): Boolean {
+        // PATH-BOUNDARY match, not a raw string prefix: a bare startsWith(marker) makes stateDir
+        // "/home/u/.arxael" match an UNRELATED sibling instance's daemon under "/home/u/.arxael-ci/..." and kill
+        // it. Anchor on a trailing separator so only paths actually UNDER stateDir (or stateDir itself) match.
+        val sep = java.io.File.separator
+        val boundary = if (marker.endsWith(sep)) marker else marker + sep
+        return cmdline.contains("GradleDaemon") && fdTargets.any { it == marker || it.startsWith(boundary) }
+    }
 }

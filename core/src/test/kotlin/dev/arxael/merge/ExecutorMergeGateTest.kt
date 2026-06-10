@@ -65,6 +65,14 @@ class ExecutorMergeGateTest {
     }
 
     @Test
+    fun `gradle gate runs with --continue so every failed module is reported in one pass`() {
+        assertEquals(listOf("--continue"), ExecutorMergeGate.gateArgs("gradle"))
+        for (a in listOf("pytest", "cargo", "go", "npm", "make")) {
+            assertEquals(emptyList(), ExecutorMergeGate.gateArgs(a), "$a takes no gradle flags")
+        }
+    }
+
+    @Test
     fun `outcome maps to the right gate verdict for every status`() {
         // SUCCESS -> green, conclusive
         ExecutorMergeGate.toGateResult("SUCCESS", "").let {

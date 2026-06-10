@@ -8,7 +8,7 @@ import java.nio.file.Path
  * Fail-closed validation of an [InvokeSpec] before it reaches the executor.
  *
  * A single arg-allowlisted /invoke surface. "Allowlist", not denylist, and
- * "fail-closed": unknown/uncertain input blocks by default. The point isn't shell-injection
+ * "fail-closed" (unknown/uncertain input blocks by default). The point isn't shell-injection
  * (the Tooling API takes argv directly, no shell) — it's that a caller must not be able to pass
  * flags that subvert the substrate's own isolation (e.g. --gradle-user-home, --project-cache-dir,
  * --init-script) or reach outside its worktree. Anything not explicitly recognised is rejected.

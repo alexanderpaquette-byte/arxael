@@ -81,13 +81,19 @@ class MergeService(
         // read-only, so this writable-warm + read-only-builds split is lock-free). Unless the operator pinned
         // an explicit ARXAEL_RO_DEP_CACHE (then we leave it alone).
         if (config.perWorktreeHome && config.roDepCachePinned == null) {
-            val seed = config.stateDir.resolve("shared-deps")
-            val roCache = timeBounded<Path?>(config.acquireTimeoutCapMs, null) {
-                DepCacheWarmer.warm(integ, seed, config.gradleHome, config.daemonIdleSec)
+            // Warm into a SEPARATE seed home, then PUBLISH the deps into the live RO cache via additive copy.
+            // Never point the warmer's writable GRADLE_USER_HOME at the RO cache directly: Gradle writes that
+            // tree in-place (lock files, in-place metadata rewrites), and a per-worktree build reading it as
+            // GRADLE_RO_DEP_CACHE meanwhile could observe a torn file — poisoning every future reader. copyNew
+            // is temp+rename, copy-if-absent, so the published deps appear atomically (same as the consolidator).
+            val seedHome = config.stateDir.resolve("shared-deps-seed")
+            val warmed = timeBounded<Path?>(config.acquireTimeoutCapMs, null) {
+                DepCacheWarmer.warm(integ, seedHome, config.gradleHome, config.daemonIdleSec)
             }
-            if (roCache != null) {
-                config.liveRoDepCache.set(roCache.toString())
-                events.emit("merge_dep_cache_warmed", mapOf("roDepCache" to roCache.toString()))
+            val roCache = config.liveRoDepCache.get()?.let { Path.of(it) }
+            if (warmed != null && roCache != null) {
+                val published = DepCacheConsolidator.copyNew(warmed.resolve("modules-2"), roCache.resolve("modules-2"))
+                events.emit("merge_dep_cache_warmed", mapOf("roDepCache" to roCache.toString(), "published" to published))
             } else {
                 events.emit("merge_dep_cache_warm_failed", emptyMap())
             }

@@ -24,8 +24,8 @@ acceptance smoke + multi-language) to prove it actually works, not just answers.
 # 1. get git if the box doesn't have it (Debian/Ubuntu shown; use your package manager)
 command -v git || sudo apt-get update && sudo apt-get install -y git
 # 2. clone + bootstrap
-git clone https://github.com/alexanderpaquette-byte/arxael-dev-kit.git
-cd arxael-dev-kit && bash scripts/bootstrap.sh
+git clone https://github.com/alexanderpaquette-byte/arxael.git
+cd arxael && bash scripts/bootstrap.sh
 ```
 
 ## Did it work?

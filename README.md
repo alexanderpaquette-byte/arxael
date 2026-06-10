@@ -2,7 +2,9 @@
 
 > Working name — deliberately language-neutral. This is a *multi-language* tool; the name must never imply one ecosystem (gradle is just the first adapter, not the product).
 
-**Concurrent multi-language test/build orchestration for AI-agent fleets.** One warm, bounded executor that many local coding agents route through — instead of each agent cold-starting its own build daemon in its own isolated sandbox.
+**A local orchestration layer for AI coding agents.** Many agents share one warm, bounded build/test executor and a **merge gate that keeps `main` green** under parallel agent work — instead of each agent cold-starting its own build daemon and racing everyone else onto `main`. Multi-language (gradle, maven, pytest, cargo, go, vitest, npm, make, exec).
+
+> **Bring your own gates.** arxael does **not** replace your tests, CI, or quality gates — it runs the checks *you already trust*, just warm, bounded, and merge-safe under controlled concurrency. The comparison isn't arxael-vs-your-CI; it's *agents each hammering build/test commands independently* vs *one controlled execution layer coordinating them*.
 
 > ⚡ **Fresh box, just want it running?** One command: `bash scripts/bootstrap.sh` → verified-running in <10 min. See **[QUICKSTART.md](QUICKSTART.md)**.
 > 🤖 **AI agent with zero context?** Read **[AGENTS.md](AGENTS.md)** — the run-it-and-use-it contract.
@@ -11,7 +13,7 @@
 
 ## The one-sentence pitch
 
-> Everyone else gives each agent its own cold, isolated box — or spreads one build across a cluster. We give the whole fleet **one warm, bounded, shared executor** on a box you own.
+> Everyone else gives each agent its own cold, isolated box — or spreads one build across a cluster. We give the whole fleet **one warm, bounded, shared executor + a merge gate** on a box you own: bring your own tests and gates, and it keeps `main` green while many agents work in parallel.
 
 ## The problem
 
@@ -76,7 +78,7 @@ deliberately does **not** do — and the trust model it assumes — is in
 
 ## Status
 
-Early-stage build, in active development. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how it works and [docs/LIMITATIONS.md](docs/LIMITATIONS.md) for what it does not do yet.
+**v1.0** — the API and behavior are stable. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how it works and [docs/LIMITATIONS.md](docs/LIMITATIONS.md) for what it deliberately does not do (single box, trusted local agents).
 
 ## License
 

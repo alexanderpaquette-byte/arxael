@@ -3,6 +3,26 @@
 All notable changes to arxael-dev-kit. Versions follow [SemVer](https://semver.org/) (pre-1.0: minor =
 notable change, patch = fix).
 
+## [1.0.0] — 2026-06-10
+
+First stable release. The API and behavior are stable; future changes follow SemVer.
+
+**Positioning (clarified, not changed):** arxael is a **local orchestration layer for AI coding agents** —
+a warm, bounded shared executor plus a merge gate that keeps `main` green under parallel agent work. It is
+**not** a testing tool or a CI replacement: you **bring your own gates** (tests, checks, build), and arxael
+runs the checks *you already trust*, warm and merge-safe under controlled concurrency.
+
+**How it earned 1.0** — five adversarial review waves (26 verified bug fixes; the final waves found no
+high/medium issues, the convergence signal), an audit of those fixes (no regressions), and three green
+empirical pillars on the hardened build:
+- `scripts/arxael verify` — unit + acceptance smoke + 5 real-toolchain multi-language invocations.
+- **Crash recovery** — SIGKILL the daemon mid-merge, restart: all in-flight PRs re-gated, `main` green, 0 reverts.
+- **Real-world OSS** — 10 agents landing real PRs through google/gson's *own* Maven suite: every good PR
+  landed, every broken one caught, `main` green, 0 reverts.
+
+Also in 1.0: fixed the public clone URL (the published QUICKSTART pointed at the private repo), and sharpened
+the README positioning to the "bring your own gates" framing.
+
 ## [0.9.0] — 2026-06-10
 
 Fifth wave: a final pre-1.0 "release-blocker" sweep of the corners earlier waves under-covered — the

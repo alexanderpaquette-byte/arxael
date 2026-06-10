@@ -1,4 +1,4 @@
-# arxael-dev-kit — System Overview (meta map)
+# arxael — System Overview (meta map)
 
 > Simplified, generated map of how the pieces fit together. The authoritative reference is
 > [ARCHITECTURE.md](ARCHITECTURE.md); this doc only covers the shape.

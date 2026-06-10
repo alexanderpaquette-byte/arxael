@@ -3,6 +3,14 @@
 All notable changes to arxael-dev-kit. Versions follow [SemVer](https://semver.org/) (pre-1.0: minor =
 notable change, patch = fix).
 
+## [1.0.1] — 2026-06-10
+
+Public-facing polish (docs only; no behavior change):
+- The public README/OVERVIEW title now reads **arxael** (matches the public repo); the internal "working
+  name" dev-note is dropped from the public release.
+- The top-of-README tagline now leads with **bring-your-own-gates** so the "runs your existing checks, does
+  not replace your tests/CI" positioning is unmissable above the fold.
+
 ## [1.0.0] — 2026-06-10
 
 First stable release. The API and behavior are stable; future changes follow SemVer.

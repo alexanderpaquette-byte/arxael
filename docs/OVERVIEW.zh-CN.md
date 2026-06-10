@@ -1,4 +1,4 @@
-# arxael-dev-kit — 系统总览（概念地图）
+# arxael — 系统总览（概念地图）
 
 > 各部分如何组合在一起的简化地图（自动生成）。关于*为什么*这样做，请以
 > [ARCHITECTURE.md](ARCHITECTURE.md) 为准；本文只讲结构。

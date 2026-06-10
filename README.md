@@ -1,8 +1,6 @@
-# arxael-dev-kit
+# arxael
 
-> Working name — deliberately language-neutral. This is a *multi-language* tool; the name must never imply one ecosystem (gradle is just the first adapter, not the product).
-
-**A local orchestration layer for AI coding agents.** Many agents share one warm, bounded build/test executor and a **merge gate that keeps `main` green** under parallel agent work — instead of each agent cold-starting its own build daemon and racing everyone else onto `main`. Multi-language (gradle, maven, pytest, cargo, go, vitest, npm, make, exec).
+**A bring-your-own-gates orchestration layer for AI coding agents.** It runs *your project's* existing checks through one warm, bounded shared executor and a **merge gate that keeps `main` green** under parallel agent work — instead of each agent cold-starting its own build daemon and racing everyone else onto `main`. Multi-language (gradle, maven, pytest, cargo, go, vitest, npm, make, exec).
 
 > **Bring your own gates.** arxael does **not** replace your tests, CI, or quality gates — it runs the checks *you already trust*, just warm, bounded, and merge-safe under controlled concurrency. The comparison isn't arxael-vs-your-CI; it's *agents each hammering build/test commands independently* vs *one controlled execution layer coordinating them*.
 

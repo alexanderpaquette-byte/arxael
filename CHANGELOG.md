@@ -3,6 +3,20 @@
 All notable changes to Arxael. Versions follow [SemVer](https://semver.org/) (pre-1.0: minor =
 notable change, patch = fix).
 
+## [1.0.4] — 2026-06-10
+
+Stability hardening for long-running deployments (no breaking changes).
+
+- **Hung builds can no longer silently shrink capacity.** A build/test that *hangs* (a deadlocked
+  test, an unresponsive build daemon) used to hold its execution slot forever; over days of uptime
+  that could ratchet throughput down to a stall. Runs are now bounded by a generous wall-clock cap
+  (`ARXAEL_BUILD_RUN_CAP_MS`, default 1h — large enough to never abort a legitimately long build),
+  cancelled and failed-closed past it, with the slot reclaimed.
+- **The per-PR status long-poll can't exhaust the HTTP pool.** Concurrent `GET /merge/pr?wait=`
+  long-polls are now bounded (past the cap they answer immediately) and use wait/notify instead of a
+  busy poll — so a fleet of waiters can't starve `/invoke` or `/health`.
+- **Graceful shutdown no longer stalls** the full drain window when a batch was mid-retry.
+
 ## [1.0.3] — 2026-06-10
 
 Reliability hardening + adoption polish (no breaking changes).

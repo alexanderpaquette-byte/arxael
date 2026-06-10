@@ -104,31 +104,51 @@ class GradleAdapter : BuildAdapter {
             // (not a property) is the only knob; we replace with the full inherited env + the addition so the
             // daemon keeps PATH/JAVA_HOME etc. Constant across builds, so the warm daemon is still reused.
             val roDepCache = config.liveRoDepCache.get()
+            // Bound a HUNG build. The Tooling-API .run() can block forever if a build wedges (a deadlocked
+            // test, an unresponsive daemon) — neither throwing nor returning — which would hold this server's
+            // lock and the executor permit PERMANENTLY (a silent capacity ratchet over long uptime). So run on
+            // a worker thread bounded by config.buildRunCapMs; on the cap, CANCEL the build via the Tooling-API
+            // token and throw, so the executor fails closed (ERROR -> evict + recreate the server -> permit
+            // released). The cap is large (default 1h) so a legitimately long build is never aborted.
+            val tokenSource = GradleConnector.newCancellationTokenSource()
+            val task = java.util.concurrent.FutureTask<RunResult> {
+                try {
+                    connection.newBuild()
+                        .apply { if (spec.tasks.isNotEmpty()) forTasks(*spec.tasks.toTypedArray()) }
+                        .apply { if (roDepCache != null) setEnvironmentVariables(System.getenv() + ("GRADLE_RO_DEP_CACHE" to roDepCache)) }
+                        .withArguments(spec.args + injected) // injected LAST -> substrate wins (see note above)
+                        .setJvmArguments("-Xmx${config.heapPerServerMb}m")
+                        .withCancellationToken(tokenSource.token())
+                        .setStandardOutput(out)
+                        .setStandardError(out)
+                        .run()
+                    sink(out.text())
+                    RunResult(success = true)
+                } catch (e: BuildException) {
+                    // Ordinary build failure (compile error, failing test). NOT an infra fault.
+                    sink(out.text())
+                    RunResult(success = false, message = e.message?.lineSequence()?.firstOrNull())
+                }
+                // GradleConnectionException (incl. a post-cancel BuildCancelledException) is NOT caught here ->
+                // it propagates out of the Callable and surfaces below as an infra fault (fail closed).
+            }
+            Thread(task, "gradle-run").apply { isDaemon = true }.start()
             return try {
-                connection.newBuild()
-                    .apply { if (spec.tasks.isNotEmpty()) forTasks(*spec.tasks.toTypedArray()) }
-                    .apply { if (roDepCache != null) setEnvironmentVariables(System.getenv() + ("GRADLE_RO_DEP_CACHE" to roDepCache)) }
-                    .withArguments(spec.args + injected) // injected LAST -> substrate wins (see note above)
-                    .setJvmArguments("-Xmx${config.heapPerServerMb}m")
-                    .setStandardOutput(out)
-                    .setStandardError(out)
-                    .run()
-                sink(out.text())
-                RunResult(success = true)
-            } catch (e: BuildException) {
-                // Ordinary build failure (compile error, failing test). NOT an infra fault.
-                sink(out.text())
-                RunResult(success = false, message = e.message?.lineSequence()?.firstOrNull())
-            } catch (e: GradleConnectionException) {
-                // Infrastructure fault — surface as a throw so the executor fails closed (ERROR).
-                throw RuntimeException("gradle connection fault: ${e.message}", e)
+                task.get(config.buildRunCapMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+            } catch (te: java.util.concurrent.TimeoutException) {
+                tokenSource.cancel() // signal the build to stop; the daemon winds the build down
+                throw RuntimeException("gradle build exceeded the ${config.buildRunCapMs}ms run cap and was cancelled (likely hung)")
+            } catch (ee: java.util.concurrent.ExecutionException) {
+                val cause = ee.cause
+                if (cause is GradleConnectionException) throw RuntimeException("gradle connection fault: ${cause.message}", cause)
+                throw RuntimeException("gradle run failed: ${cause?.message ?: ee.message}", cause ?: ee)
             }
         }
 
         // Weak probe (the Tooling API has no cheap liveness ping). Real recovery is FAULT-driven instead: a
-        // broken connection throws on run, and WarmExecutor.evictFaulted drops + recreates the server. (A
-        // silently-HUNG build is the residual: it neither throws nor frees the permit — bounded only by the
-        // caller's own patience; builds are legitimately long, so no run-timeout is imposed.)
+        // broken connection throws on run, and WarmExecutor.evictFaulted drops + recreates the server. A
+        // silently-HUNG build is now bounded too: run() caps the build at config.buildRunCapMs and cancels +
+        // fails closed past it, so a hang can no longer hold the permit forever (see run()).
         override fun healthy(): Boolean = true
 
         override fun close() {

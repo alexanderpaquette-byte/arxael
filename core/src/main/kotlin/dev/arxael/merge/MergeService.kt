@@ -26,6 +26,13 @@ class MergeService(
     @Volatile private var orchestrator: MergeOrchestrator? = null
     @Volatile private var registeredRepo: String? = null
 
+    // Bound how many /merge/pr long-polls can BLOCK at once. They run on the shared HTTP thread pool
+    // (sized ~maxConcurrent*2+4); the documented agent land-loop long-polls /merge/pr, so without a cap a
+    // fleet of waiters could park every HTTP thread and starve /invoke + /health (a friendly-agent DoS).
+    // Cap at maxConcurrent, leaving the rest of the pool for everything else; past the cap, answer immediately
+    // (the agent just polls again).
+    private val longPollGate = java.util.concurrent.Semaphore(maxOf(1, config.maxConcurrent))
+
     @Synchronized
     fun register(repo: String, forwardDeps: Map<String, Set<String>>, threshold: Int, gateCount: Int): Registered {
         teardown()
@@ -141,7 +148,13 @@ class MergeService(
      *  Returns null only if no project is registered; an unknown branch resolves to state "unknown". */
     fun prStatus(branch: String, waitMs: Long): Map<String, Any?>? {
         val o = orchestrator ?: return null
-        val out = if (waitMs > 0) o.prStatusWait(branch, waitMs) else o.prStatus(branch)
+        // Long-poll only if we're under the concurrent-waiter cap; otherwise answer immediately (non-blocking)
+        // so a flood of long-polls can never starve the rest of the HTTP surface.
+        val out = if (waitMs > 0 && longPollGate.tryAcquire()) {
+            try { o.prStatusWait(branch, waitMs) } finally { longPollGate.release() }
+        } else {
+            o.prStatus(branch)
+        }
         return mapOf(
             "branch" to branch,
             "state" to (out?.state ?: "unknown"),

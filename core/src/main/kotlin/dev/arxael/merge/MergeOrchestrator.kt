@@ -85,22 +85,29 @@ class MergeOrchestrator(
     }
 
     private fun setPr(branch: String, state: String, terminal: Boolean, commit: String? = null, reason: String? = null) {
-        synchronized(prOutcomes) { prOutcomes[branch] = PrOutcome(state, terminal, commit, reason) }
+        synchronized(prOutcomes) {
+            prOutcomes[branch] = PrOutcome(state, terminal, commit, reason)
+            (prOutcomes as Object).notifyAll() // wake any long-pollers in prStatusWait (instead of a busy spin)
+        }
     }
 
     /** The last-known lifecycle state of [branch], or null if the orchestrator has no record of it. */
     fun prStatus(branch: String): PrOutcome? = synchronized(prOutcomes) { prOutcomes[branch] }
 
     /** Block until [branch] reaches a TERMINAL state or [timeoutMs] elapses (long-poll for the agent's land
-     *  loop). Returns the last-known outcome (possibly null/non-terminal on timeout). Polls cheaply — landings
-     *  are far rarer than this loop, so a tight wait is fine and avoids a condition-variable per branch. */
+     *  loop). Returns the last-known outcome (possibly null/non-terminal on timeout). Uses the prOutcomes
+     *  monitor's wait/notify — a state change wakes waiters, so there's no busy spin (the prior 25ms-poll loop
+     *  burned CPU at ~40Hz per waiter). Callers bound how many threads block here (see MergeService). */
     fun prStatusWait(branch: String, timeoutMs: Long): PrOutcome? {
-        val deadline = System.nanoTime() + timeoutMs * 1_000_000
-        while (true) {
-            val o = prStatus(branch)
-            if (o != null && o.terminal) return o
-            if (System.nanoTime() >= deadline) return o
-            Thread.sleep(25)
+        val deadlineNs = System.nanoTime() + timeoutMs * 1_000_000
+        synchronized(prOutcomes) {
+            while (true) {
+                val o = prOutcomes[branch]
+                if (o != null && o.terminal) return o
+                val remMs = (deadlineNs - System.nanoTime()) / 1_000_000
+                if (remMs <= 0) return o // timed out -> return whatever we have (null or non-terminal)
+                (prOutcomes as Object).wait(remMs)
+            }
         }
     }
 
@@ -271,6 +278,14 @@ class MergeOrchestrator(
      * (no revert, so no re-merge poisoning — unlike the optimistic path, which re-tests in place instead).
      */
     private fun requeueForRetry(pr: PullRequest, why: String) {
+        // Don't re-queue once shutting down: the drain loop is already stopping, so a re-queued PR would never
+        // be drained and awaitQuiescent (waits on an empty queue) would burn the full GATE_DRAIN_MS on every
+        // shutdown that caught a batch mid-retry. The journal re-gates it on the next register anyway.
+        if (shutDown) {
+            mErrors.incrementAndGet(); journal?.done(pr.branch)
+            setPr(pr.branch, "error", true, reason = "shutdown-during-$why")
+            return
+        }
         if (pr.gateAttempts >= MAX_GATE_RETRIES) {
             mErrors.incrementAndGet()
             journal?.done(pr.branch) // terminal: stop retrying; the agent can resubmit later

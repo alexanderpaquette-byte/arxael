@@ -97,6 +97,13 @@ data class BoxConfig(
     val acquireTimeoutMultiplier: Int = 4,
     /** Hard cap on the adaptive overload timeout (ms) — a genuinely wedged box must still fail closed. */
     val acquireTimeoutCapMs: Long = 600_000,
+    /** Wall-clock cap on a single build/test RUN (ms). The Gradle Tooling-API `.run()` can block forever if a
+     *  build HANGS (a deadlocked test, an unresponsive daemon) — neither throwing nor returning — which would
+     *  hold the worktree lock + the executor permit PERMANENTLY, ratcheting capacity down to a silent wedge over
+     *  long uptime. On hitting this cap the build is cancelled (Tooling-API token) and the run fails closed
+     *  (ERROR -> the executor evicts + recreates the server, releasing the permit). Default 1h — large enough to
+     *  NEVER abort a legitimately long build; only a true hang exceeds it. ARXAEL_BUILD_RUN_CAP_MS. */
+    val buildRunCapMs: Long = 3_600_000,
     /** How much of the machine to use: 100 = the whole box (default, max performance), 60 = ~60% of cores
      *  and build-available RAM, etc. One dial; ARXAEL_BUDGET_PCT. Exact caps still come from ARXAEL_CORES /
      *  ARXAEL_USABLE_RAM_MB / ARXAEL_MAX_CONCURRENT. */
@@ -262,6 +269,7 @@ data class BoxConfig(
             val mergeBatchCap = maxOf(1, env("ARXAEL_MERGE_BATCH_CAP")?.toIntOrNull() ?: 16)
             val acquireTimeoutMultiplier = maxOf(1, env("ARXAEL_ACQUIRE_TIMEOUT_MULT")?.toIntOrNull() ?: 4)
             val acquireTimeoutCapMs = env("ARXAEL_ACQUIRE_TIMEOUT_CAP_MS")?.toLongOrNull() ?: 600_000L
+            val buildRunCapMs = env("ARXAEL_BUILD_RUN_CAP_MS")?.toLongOrNull()?.takeIf { it > 0 } ?: 3_600_000L
 
             return BoxConfig(
                 cores = cores,
@@ -291,6 +299,7 @@ data class BoxConfig(
                 governorIntervalMs = governorIntervalMs,
                 acquireTimeoutMultiplier = acquireTimeoutMultiplier,
                 acquireTimeoutCapMs = acquireTimeoutCapMs,
+                buildRunCapMs = buildRunCapMs,
                 budgetPct = budgetPct,
                 optimisticConfirmations = optimisticConfirmations,
                 roDepCachePinned = roDepCachePinned,

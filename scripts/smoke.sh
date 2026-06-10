@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# arxael — deterministic, agent-independent acceptance smoke test.
+# Arxael — deterministic, agent-independent acceptance smoke test.
 #
 # "start daemon -> /invoke a trivial build -> assert green", no matter how
 # fancy the install path. This script is the contract. Exit 0 = green, non-zero = red.

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# arxael — deterministic core install script.
+# Arxael — deterministic core install script.
 #
 # This is the substrate's source of truth for "make this box able to run the daemon".
 # The agent-native setup (docs/SETUP.md) WRAPS this; power users / CI run it directly.

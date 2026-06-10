@@ -3,6 +3,10 @@
 All notable changes to arxael-dev-kit. Versions follow [SemVer](https://semver.org/) (pre-1.0: minor =
 notable change, patch = fix).
 
+## [1.0.2] — 2026-06-10
+
+- Public title displays as **Arxael** (proper noun) in the README and OVERVIEW headings. Docs only.
+
 ## [1.0.1] — 2026-06-10
 
 Public-facing polish (docs only; no behavior change):

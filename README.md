@@ -1,4 +1,4 @@
-# arxael
+# Arxael
 
 **A bring-your-own-gates orchestration layer for AI coding agents.** It runs *your project's* existing checks through one warm, bounded shared executor and a **merge gate that keeps `main` green** under parallel agent work — instead of each agent cold-starting its own build daemon and racing everyone else onto `main`. Multi-language (gradle, maven, pytest, cargo, go, vitest, npm, make, exec).
 

@@ -104,7 +104,10 @@ class MergeService(
         // Durability: journal PR lifecycle so a daemon crash mid-flight re-enqueues unfinished PRs on the
         // next register (recovers lost queue entries AND re-gates any unverified optimistic land — soundness).
         // Lives OUTSIDE the worktree base (which register wipes), so it survives a restart.
-        val journal = PrJournal(config.stateDir.resolve("merge-pr-journal"))
+        // Repo-SCOPED journal: keyed by the repo path so a re-register to a DIFFERENT project can't replay the
+        // previous project's branch names against it (they'd just bounce, but it's noise). Same repo across
+        // restarts -> same path -> recovery still works (String.hashCode is stable/specified).
+        val journal = PrJournal(config.stateDir.resolve("merge-pr-journal-${Integer.toHexString(repo.hashCode())}"))
         val orch = MergeOrchestrator(
             bare, integ, gates, router, gate, events, journal = journal,
             batchCap = config.mergeBatchCap,

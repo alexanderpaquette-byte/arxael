@@ -3,6 +3,37 @@
 All notable changes to arxael-dev-kit. Versions follow [SemVer](https://semver.org/) (pre-1.0: minor =
 notable change, patch = fix).
 
+## [0.9.0] — 2026-06-10
+
+Fifth wave: a final pre-1.0 "release-blocker" sweep of the corners earlier waves under-covered — the
+install/ops scripts, the systemd unit, API/protocol stability, and doc-vs-reality. It confirmed the hard
+guarantees are 1.0-grade (`main` never left red, no green PR lost, repo-scoped journal recovery, bounded
+growth, no FD/thread leaks, protocol stability) and found one real blocker, now fixed:
+
+- **systemd crash-loop limiter was inert:** `StartLimitIntervalSec`/`StartLimitBurst` were in `[Service]`,
+  which systemd ignores (verified via `systemd-analyze`) — so a deterministic startup failure (e.g. the port
+  already in use) would restart every 2s forever. Moved to `[Unit]`; now >5 starts in 60s fails the unit
+  instead of thrashing.
+- The daemon now exits with a **clear message** ("cannot bind 127.0.0.1:&lt;port&gt; …") on a bind failure,
+  instead of an opaque looping stack trace.
+- `install-service.sh` parses the advertised `--user` flag, and the liveness probe reads `ARXAEL_PORT` from
+  the same env source as the daemon (a port change can't desync the probe and restart a healthy daemon).
+- README license set to Apache-2.0 (was "TBD").
+
+## [0.8.0] — 2026-06-10
+
+Fourth review wave: an audit of the prior three waves' own fixes (no high/medium regressions found) plus a
+fresh-eyes pass on the under-covered subsystems. The wave found no HIGH/MED issues — the convergence signal
+toward v1.0. The LOW items it surfaced, fixed here:
+
+- Reverted the v0.7.0 `waitingCount` change: the two permit-lane queues hold disjoint sets of threads, so the
+  SUM is the correct count of distinct waiters (the earlier "double-count" reasoning was wrong; `maxOf`
+  under-counted the governor's demand signal).
+- Recovered PRs no longer pollute the time-to-land p50: a PR reconstructed from the journal carries a
+  `submittedAtNanos` from a prior process (nanoTime has no cross-restart epoch), so it's excluded from the metric.
+- The PR journal is now repo-scoped, so a re-register to a *different* project can't replay the previous
+  project's branch names (same repo across restarts still recovers correctly).
+
 ## [0.7.0] — 2026-06-10
 
 Third adversarial review wave (three reviewers: validator/parser fuzzing, HTTP/adapter robustness, and

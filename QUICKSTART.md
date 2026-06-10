@@ -45,6 +45,21 @@ cd /path/to/your/project
 ```
 Turn it off any time with `scripts/arxael stop` (it cleans up after itself).
 
+## What runs your tests — and what if I don't have any?
+arxael is the gatekeeper: it checks every change *before* it lands and only lets it in if the checks pass, so
+one agent's broken change can't break everyone else. It runs **your project's own checks** — it doesn't write
+them for you. At minimum that's *"does it still build?"* (caught automatically for most stacks); beyond that,
+any tests you have.
+
+**No tests yet?** It still blocks broken builds and merges everyone's work cleanly — and the moment you, or
+your AI (*"add a test that proves X works"*), add a check, arxael enforces it on **every** future change from
+**every** agent, automatically. That's how "my app keeps breaking" stops: each bug becomes a test, each test
+becomes a permanent guardrail.
+
+It auto-detects the command for your stack (`gradle test`, `mvn test`, `pytest`, `cargo test`, `go test`,
+`npm test`, …) — an agent just names the adapter. (The `verify`/smoke step above tests arxael itself, not
+your project.)
+
 ## AI agents
 Read [AGENTS.md](AGENTS.md), or — if the helper is already running — ask it to describe itself:
 ```bash

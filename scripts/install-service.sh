@@ -12,12 +12,20 @@
 set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 UNIT_USER="${SUDO_USER:-$(id -un)}"
+UNINSTALL=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --user) UNIT_USER="${2:?--user needs a value}"; shift 2 ;;
+    --uninstall) UNINSTALL=1; shift ;;
+    *) echo "unknown arg: $1 (usage: $(basename "$0") [--user <unit-user>] [--uninstall])"; exit 1 ;;
+  esac
+done
 GRADLE_HOME="$(for g in /opt/gradle/gradle-* ; do [ -x "$g/bin/gradle" ] && echo "$g" && break; done)"
 LAUNCHER="$REPO/core/build/install/core/bin/core"
 PORT="${ARXAEL_PORT:-8723}"
 SUDO=""; [ "$(id -u)" -ne 0 ] && SUDO="sudo"
 
-if [ "${1:-}" = "--uninstall" ]; then
+if [ "$UNINSTALL" = "1" ]; then
   $SUDO systemctl disable --now arxael.service arxael-health.timer 2>/dev/null || true
   $SUDO rm -f /etc/systemd/system/arxael.service /etc/systemd/system/arxael-health.service /etc/systemd/system/arxael-health.timer
   $SUDO systemctl daemon-reload
@@ -32,6 +40,11 @@ $SUDO tee /etc/systemd/system/arxael.service >/dev/null <<UNIT
 [Unit]
 Description=arxael-dev-kit — warm bounded build/test executor + merge orchestrator
 After=network.target
+# Crash-loop limiter. MUST be in [Unit] — systemd ignores StartLimit* in [Service] (verified via
+# systemd-analyze verify), which would leave a deterministic startup failure (e.g. port already in use)
+# restarting every RestartSec forever. Here, >5 starts in 60s puts the unit in 'failed' instead of thrashing.
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -43,9 +56,6 @@ ExecStart=$LAUNCHER
 # crash recovery: on restart the PrJournal re-enqueues + re-gates unfinished PRs (no unverified change on main)
 Restart=always
 RestartSec=2
-# don't thrash if it's crash-looping
-StartLimitIntervalSec=60
-StartLimitBurst=5
 # clean up this daemon's gradle build-daemons on stop (scoped to homes under its state dir)
 ExecStopPost=$REPO/scripts/reap-daemons.sh
 
@@ -59,8 +69,12 @@ $SUDO tee /etc/systemd/system/arxael-health.service >/dev/null <<HSVC
 Description=arxael liveness check (restarts a wedged daemon)
 [Service]
 Type=oneshot
+Environment=ARXAEL_PORT=$PORT
+EnvironmentFile=-/etc/arxael/arxael.env
+# Read the port from the SAME env source as the daemon (file overrides the default), so changing ARXAEL_PORT
+# can't leave the probe checking a stale port and restarting a healthy daemon every 30s.
 # if /health doesn't answer within 5s, the process is wedged (not just busy) -> restart it
-ExecStart=/bin/sh -c 'curl -fsS -m 5 http://127.0.0.1:$PORT/health >/dev/null || systemctl restart arxael.service'
+ExecStart=/bin/sh -c 'curl -fsS -m 5 http://127.0.0.1:\${ARXAEL_PORT}/health >/dev/null || systemctl restart arxael.service'
 HSVC
 
 $SUDO tee /etc/systemd/system/arxael-health.timer >/dev/null <<HTMR

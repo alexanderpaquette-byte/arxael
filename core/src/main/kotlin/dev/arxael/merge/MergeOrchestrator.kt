@@ -423,6 +423,7 @@ class MergeOrchestrator(
     }
 
     private fun recordTtl(pr: PullRequest) {
+        if (pr.recovered) return // its submittedAtNanos is from a prior process -> not a real submit-to-land sample
         synchronized(ttlNanos) {
             ttlNanos.addLast(System.nanoTime() - pr.submittedAtNanos)
             while (ttlNanos.size > MAX_TTL_SAMPLES) ttlNanos.removeFirst() // keep only recent (bounded memory)

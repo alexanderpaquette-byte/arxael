@@ -76,7 +76,7 @@ class PrJournal(private val path: Path) {
             when (p.getOrNull(0)) {
                 "SUBMIT" -> if (p.size >= 4) {
                     open.remove(p[1]) // drop any prior incarnation so re-insert restores submit ORDER
-                    open[p[1]] = PullRequest(branch = p[1], module = p[2].ifEmpty { null }, agentId = p[3].ifEmpty { null })
+                    open[p[1]] = PullRequest(branch = p[1], module = p[2].ifEmpty { null }, agentId = p[3].ifEmpty { null }, recovered = true)
                 }
                 "DONE" -> p.getOrNull(1)?.let { open.remove(it) }
             }

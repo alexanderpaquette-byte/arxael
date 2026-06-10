@@ -22,9 +22,44 @@ Run many AI coding agents in parallel and each one kicks builds/tests. Two thing
 
 The differentiator is **density, not speed**: a single build runs at the toolchain's speed either way. The win is *how many concurrent agents one box sustains before it falls over.*
 
+## Features at a glance
+
+- **Never lands broken code.** Every change is tested *merged onto the live `main`* and lands only if it passes — automatically reverted if not (the merge gate).
+- **One warm, shared engine for the whole fleet.** Many agents route through a single bounded executor instead of each cold-starting its own — the density win (the warm bounded executor).
+- **Works with your language.** Zero-config adapters for **gradle, gradlew, maven, pytest, cargo, go, vitest, npm, make**, plus a generic **exec** — an agent just names it.
+- **Sizes itself to your box.** Learns each build's memory footprint and tunes concurrency up/down on its own — no knobs to set (adaptive auto-sizing).
+- **Only re-tests what changed.** Skips doc-only edits and scopes tests to the modules a change actually touched (change-aware scoping).
+- **Fast, conflict-free merges.** Auto-routes each change (land-now-verify-async for small, gate-then-land for big) and, on a red batch, blames the right change instead of bouncing everyone (auto-route + culprit attribution).
+- **Landings never wait behind branch-tests.** A reserved high-priority lane keeps merges flowing under a flood of agent test runs.
+- **Survives crashes.** A journal re-checks any in-flight change after a restart, so a crash never leaves a broken or unverified change on `main` (crash recovery).
+- **Self-healing on one box.** Runs as a supervised service that auto-restarts on crash *and* on hang, and reaps leaked build daemons (systemd unit + liveness watchdog).
+- **See everything live.** Native **Prometheus** metrics at `/metrics` (no exporter) + a ready **Grafana** dashboard — throughput, time-to-land, reverts, live capacity (in `ops/`).
+- **Never wedges the box.** Fails closed under overload (tells a caller to retry rather than collapsing) and bounds output, request size, and disk growth.
+- **No re-download storms.** Per-worktree build homes share one read-only dependency cache, so concurrent builds don't re-fetch or lock each other (shared RO dep cache).
+
 ## Multi-language
 
 Adapters ship for **gradle** (warm Tooling-API), **gradlew** (a project's own wrapper), **maven**, **pytest**, **cargo**, **go**, **vitest**, **npm**, **make**, plus a generic **exec** for any command. An agent just names the adapter — `{"adapter":"pytest","worktree":"/path"}` runs the conventional test command with zero config, or pass explicit `tasks` to override. Adding an ecosystem is one line behind the `BuildAdapter` SPI; the executor and merge orchestration don't change.
+
+## What you bring vs. what arxael provides
+
+**In plain terms:** arxael is the gatekeeper that checks every change *before* it goes into your project and only lets it in if the checks pass — so one AI agent's broken change never lands and breaks everyone else's work. It runs **your project's own checks**; it doesn't invent them for you.
+
+What's a "check"? At minimum, **does the project still build / run?** — for most stacks, a change that doesn't compile is caught and rejected automatically. On top of that, **any tests your project has**. You don't have to know testing or write them yourself: tell your AI agent *"add a test that proves X works,"* and from then on arxael enforces it on **every** future change, from every agent. That's the loop that ends "my app keeps breaking" — each bug becomes a test, and each test becomes a permanent, automatic guardrail.
+
+> **No tests at all?** arxael still does two useful things — it blocks changes that break the build, and it merges everyone's work without conflicts. It just can't catch a bug that nothing tests for. Adding even a few checks (or asking your agent to) is where it starts catching real regressions.
+
+**arxael provides — the whole gating engine, you don't build it:**
+- The **gate**: every change is tested *merged onto the live `main`* and lands only if green, **auto-reverting if it goes red** — plus smart routing, change-scoping (skip doc-only edits), blame-the-right-change attribution, and crash recovery.
+- The **warm, shared executor** that runs those checks fast for the whole agent fleet at once.
+- **Adapters that already know each stack's test command** — `gradle test` / `:module:test`, `mvn test`, `pytest`, `cargo test`, `go test ./...`, `npm test`, `make test`, the project's own `./gradlew`. Zero-config (an agent just names the adapter), or override per call (`tasks`/`args`) or per deployment (`ARXAEL_<NAME>_CMD`).
+
+**You bring:**
+- **Your project** — a git repo with a `main` branch.
+- **The checks** — at minimum that it builds; ideally tests (your AI can write them).
+- Agents that confirm their change passes **on their own branch** before submitting it; arxael then re-checks it *merged with everyone else's work* before letting it land.
+
+The `scripts/smoke.sh` / `scripts/arxael verify` that run at install time test **arxael itself** — not your project.
 
 ## Observability
 

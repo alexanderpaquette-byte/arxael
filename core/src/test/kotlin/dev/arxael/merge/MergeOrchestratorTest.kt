@@ -349,6 +349,9 @@ class MergeOrchestratorTest {
         assertEquals("mod1 recovered", mainContent(":mod1"))
         assertEquals("mod2 recovered", mainContent(":mod2"))
         assertEquals(emptyList(), PrJournal(journalPath).pending(), "journal shows nothing pending after recovery")
+        // recovered PRs carry a submittedAtNanos from the PRIOR process (no epoch across restarts), so their
+        // time-to-land is meaningless and must NOT pollute the p50 metric.
+        assertEquals(0L, o.snapshot()["p50TimeToLandMs"], "recovered lands are excluded from the time-to-land p50")
     }
 
     /** A worktree checked out to main for a final full-gate assertion. */

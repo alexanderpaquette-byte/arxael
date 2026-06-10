@@ -18,6 +18,9 @@ data class PullRequest(
     /** How many times this PR has been re-queued after an INCONCLUSIVE gate (infra OVERLOADED/ERROR). Bounded
      *  so a persistently-broken substrate can't make a PR retry — or flap main — forever. */
     val gateAttempts: Int = 0,
+    /** True for a PR reconstructed from the journal on crash-recovery: its [submittedAtNanos] is from a PRIOR
+     *  process (nanoTime has no epoch across restarts), so its time-to-land is meaningless and excluded from p50. */
+    val recovered: Boolean = false,
 )
 
 /**

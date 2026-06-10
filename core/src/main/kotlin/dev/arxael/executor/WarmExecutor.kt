@@ -78,9 +78,10 @@ class WarmExecutor(
     fun inFlight(): Int = inFlight.get()
 
     /** Threads currently blocked waiting for a permit (demand signal for the adaptive governor). */
-    // maxOf, not sum: a normal caller queues on normalPermits THEN on permits (sequentially, one at a time), so
-    // summing the two queue lengths double-counts demand and biases the governor to grow (raising pressure).
-    fun waitingCount(): Int = maxOf(permits.queueLength, normalPermits.queueLength)
+    // Sum, not max: a thread waits on AT MOST one of the two semaphores at a time (it holds the normal-lane
+    // permit before it blocks on the global one), so the two queues hold DISJOINT sets of threads — the sum is
+    // the true count of distinct waiters. (max would UNDER-report when both gates have waiters at once.)
+    fun waitingCount(): Int = permits.queueLength + normalPermits.queueLength
 
     /** Current adaptive concurrency target. */
     fun concurrencyTarget(): Int = permits.configuredPermits()

@@ -83,7 +83,17 @@ fun main() {
     }
 
     server = InvokeServer(config, executor, events, onShutdown = shutdown, merge = merge, governor = governor)
-    server.start()
+    try {
+        server.start()
+    } catch (e: java.io.IOException) {
+        // Most commonly: the port is already in use (another arxael, or any process). Fail with a CLEAR reason
+        // instead of an opaque stack trace looping every RestartSec under systemd (now bounded by StartLimit*).
+        System.err.println("[arxael] FATAL: cannot bind 127.0.0.1:${config.port} — ${e.message}. " +
+            "Another process (or arxael) may hold it; set ARXAEL_PORT to use a different port.")
+        events.emit("daemon_bind_failed", mapOf("port" to config.port, "error" to (e.message ?: e.toString())))
+        events.close()
+        kotlin.system.exitProcess(2)
+    }
     watchdog.start()
     governor.start()
     consolidator?.start()

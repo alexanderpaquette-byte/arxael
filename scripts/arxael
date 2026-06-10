@@ -72,7 +72,8 @@ choose_budget() {
 cmd_up() {
   local gh; gh="$(find_gradle_home)"
   if [ -z "$gh" ]; then
-    say "$ERR I need Java's build tool (Gradle) and couldn't find it."
+    say "$ERR Setting up the engine needs Java's build tool (Gradle) once — and I couldn't find it."
+    say "   (That's for the helper itself; ${B}your${D} project can be Python/Rust/Node/Go/etc.)"
     say "   One-time setup: ${B}bash $HERE/scripts/install.sh${D}   then run ${B}arxael up${D} again."
     exit 1
   fi
@@ -122,6 +123,26 @@ connect_current_project() {
     say "Connecting ${B}$name${D} (one-time setup of a shared copy)…"
     git clone -q --bare "$top" "$hub" || { say "$ERR Couldn't set up the shared copy."; return; }
     git -C "$hub" config user.email arxael@local; git -C "$hub" config user.name arxael
+  else
+    # The shared copy already exists. If you committed to your working main outside arxael, the shared copy
+    # would be stale and agents would branch off an old base. So fast-forward it to your latest main — but only
+    # when that's safe: fetch into a scratch ref (always succeeds), then advance main ONLY if it's a true
+    # fast-forward. If the shared copy is already ahead (agents landed work you haven't pulled), leave it; if the
+    # two genuinely diverged, don't silently rewrite — warn so you can reconcile. Your working files are untouched.
+    if git -C "$top" rev-parse --verify -q main >/dev/null 2>&1; then
+      git -C "$hub" fetch -q "$top" "main:refs/arxael/incoming" 2>/dev/null || true
+      local inc cur; inc="$(git -C "$hub" rev-parse -q --verify refs/arxael/incoming 2>/dev/null)"; cur="$(git -C "$hub" rev-parse -q --verify main 2>/dev/null)"
+      if [ -n "$inc" ] && [ "$inc" != "$cur" ]; then
+        if git -C "$hub" merge-base --is-ancestor "$cur" "$inc" 2>/dev/null; then
+          git -C "$hub" update-ref refs/heads/main "$inc" && say "$OK Brought your latest ${B}main${D} into the shared copy."
+        elif git -C "$hub" merge-base --is-ancestor "$inc" "$cur" 2>/dev/null; then
+          : # shared copy is ahead (agents landed work you haven't pulled yet) — expected, nothing to do
+        else
+          say "$WARN Your ${B}main${D} and the shared copy have diverged; the shared copy was left as-is. Reconcile (e.g. ${B}git pull \"$hub\" main${D}) if needed."
+        fi
+      fi
+      git -C "$hub" update-ref -d refs/arxael/incoming 2>/dev/null || true
+    fi
   fi
   local res; res="$(post /merge/register "{\"repo\":\"$hub\",\"gateWorktrees\":4}" 120 2>/dev/null)"
   if echo "$res" | grep -q '"ok":true'; then
@@ -129,7 +150,7 @@ connect_current_project() {
     say "$OK Connected ${B}$name${D}${mods:+ ($mods modules)}. Agents can now submit changes; merged work lands in:"
     say "   $hub   (get it with: ${B}git pull \"$hub\" main${D})"
   else
-    say "$WARN Couldn't connect the project. Run ${B}arxael logs${D} to see why."
+    say "$WARN Couldn't connect ${B}$name${D} — usually no commits on ${B}main${D} yet, or the daemon is busy. See ${B}arxael logs${D}."
   fi
 }
 
@@ -155,7 +176,7 @@ cmd_status() {
     [ "${inflight:-0}" != 0 ] && msg="$msg, ${inflight} being checked right now"
     say "$msg."
   else
-    say "$WARN No project connected yet — go into your project and run ${B}arxael up${D}."
+    say "→ Next: go into your project folder and run ${B}arxael up${D} to connect it."
   fi
   if [ "${errs:-0}" != "0" ] && [ -n "${errs:-}" ]; then
     say "$WARN ${errs} recent problem(s). See them with ${B}arxael logs${D}."
@@ -221,14 +242,23 @@ cmd_bench() {
   if is_running; then say "$WARN The daemon is running; ${B}arxael stop${D} first (bench starts its own)."; exit 1; fi
   export ARXAEL_GRADLE_HOME="$GH"
   "$HERE/gradlew" -p "$HERE" -q :core:installDist >/dev/null 2>&1 || { say "$ERR build failed"; exit 1; }
+  # The benchmark needs the wide-DAG gradle fixture. Generate it once if missing — a fresh box (or one whose
+  # /tmp was cleared, e.g. after a resize) has none, and without this the driver fails deep inside with an
+  # opaque FileNotFoundError that the per-arm error capture below would otherwise be the only hint of.
+  local FIX=/tmp/wide-dag
+  if [ ! -d "$FIX" ]; then
+    say "→ generating the wide-DAG benchmark fixture (one-time)…"
+    python3 "$HERE/bench/fixtures/gen_fixture.py" "$FIX" --modules 8 --classes 30 --methods 3 --fanin 3 >/dev/null 2>&1 \
+      || { say "$ERR couldn't generate the benchmark fixture ($FIX)"; exit 1; }
+  fi
   local agents="${2:-6}" cores="${3:-12}" window="${4:-60}"
   run_one() { # $1 = per-worktree-home true|false ; echoes "N merges/min (p50 ...)"
-    local out="/tmp/arxael-bench-$1.jsonl"; rm -f "$out"
-    ARXAEL_PER_WORKTREE_HOME="$1" python3 "$HERE/bench/merge_http_load.py" --auto-warm \
+    local out="/tmp/arxael-bench-$1.jsonl" log="/tmp/arxael-bench-$1.log"; rm -f "$out"
+    ARXAEL_PER_WORKTREE_HOME="$1" python3 "$HERE/bench/merge_http_load.py" --auto-warm --fixture "$FIX" \
       --agents "$agents" --cores "$cores" --max-concurrent "$cores" --reserved-high 2 \
-      --window "$window" --threshold 4 --port 8795 --root "/tmp/arxael-bench-$1" --out "$out" >/dev/null 2>&1
+      --window "$window" --threshold 4 --port 8795 --root "/tmp/arxael-bench-$1" --out "$out" >"$log" 2>&1
     python3 -c "import json;d=json.loads(open('$out').read().splitlines()[-1]);print('%(merges_per_min)s merges/min (p50 %(p50TimeToLandMs)sms, landed=%(landed)s, reverts=%(reverts)s)'%d)" 2>/dev/null \
-      || echo "(no result — see /tmp/arxael-bench-$1)"
+      || { echo "(no result — last lines of $log:)"; tail -3 "$log" 2>/dev/null | sed 's/^/    /'; }
   }
   if [ "${1:-}" = "--ab" ]; then
     say "→ A/B: per-worktree-home ON vs OFF (${agents} agents, ${cores} cores, ${window}s each)…"
@@ -239,6 +269,20 @@ cmd_bench() {
   else
     say "→ throughput (${agents} agents, ${cores} cores, ${window}s)…"
     say "  $(run_one true | tail -1)"
+  fi
+}
+
+# ---------------------------------------------------------------- pull: bring merged work back to your checkout
+# Landed changes live in the shared 'hub' copy; this fast-forwards your working checkout to them (the return
+# trip — `arxael up` already syncs YOUR commits INTO the hub). Your files are only ever moved forward.
+cmd_pull() {
+  if ! git -C . rev-parse --is-inside-work-tree >/dev/null 2>&1; then say "$ERR Go into your project folder first."; exit 1; fi
+  local top name hub; top="$(git -C . rev-parse --show-toplevel)"; name="$(basename "$top")"; hub="$STATE/hubs/$name.git"
+  [ -d "$hub" ] || { say "$WARN ${B}$name${D} isn't connected yet — run ${B}arxael up${D} here first."; exit 1; }
+  if git -C "$top" pull --ff-only "$hub" main >/dev/null 2>&1; then
+    say "$OK Pulled the latest merged work into ${B}$name${D}."
+  else
+    say "$WARN Couldn't fast-forward (your checkout has local commits the shared copy doesn't). Reconcile: ${B}git pull \"$hub\" main${D}."
   fi
 }
 
@@ -255,6 +299,7 @@ case "${1:-}" in
   status)     cmd_status ;;
   logs)       cmd_logs ;;
   stop|down)  cmd_stop ;;
+  pull)       cmd_pull ;;
   verify|prove) cmd_verify ;;
   bench)      cmd_bench "${2:-}" "${3:-}" "${4:-}" "${5:-}" ;;
   ""|help|-h|--help)
@@ -268,6 +313,6 @@ case "${1:-}" in
     say "AI agents don't run any commands — after ${B}arxael up${D} they just call the API:"
     say "  curl -s 127.0.0.1:\$(cat ~/.arxael/port 2>/dev/null || echo 8723)/   ${D}# self-describing; see AGENTS.md${D}"
     say ""
-    say "Occasionally useful: ${B}logs${D} (what happened) · ${B}verify${D} (prove it works) · ${B}bench${D} (measure throughput)" ;;
+    say "Occasionally useful: ${B}pull${D} (get merged work into your checkout) · ${B}logs${D} (what happened) · ${B}verify${D} (prove it works) · ${B}bench${D} (throughput)" ;;
   *) say "$ERR Unknown command: $1. Try ${B}arxael help${D}." ; exit 1 ;;
 esac

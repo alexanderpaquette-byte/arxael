@@ -158,14 +158,118 @@ class MergeOrchestratorTest {
 
     @Test
     fun `a single-module change is gated against only that module's closure (derived from the diff)`() {
-        val scopes = java.util.Collections.synchronizedList(mutableListOf<Set<String>?>())
+        val scopes = java.util.concurrent.CopyOnWriteArrayList<Set<String>?>()
         val recording = MergeGate { _, modules, _ -> scopes.add(modules); GateResult(green = true) }
         val o = setup(gate = recording, moduleDirs = moduleDirs)
-        // module=null (agent didn't declare), but the diff touches only mod3 -> scope derived from the diff.
+        // module=null (agent didn't declare), but the diff touches only mod3 -> the module is INFERRED from the
+        // diff, the PR takes the optimistic fast path, and its gate is scoped to that module's closure.
         // (use a .kt source path, not the fixture's code.txt — a .txt would correctly be treated as inert.)
         o.processBatch(listOf(createPrFile("m3", "mod3/Code.kt", "class C")))
+        assertTrue(o.awaitQuiescent(30_000), "the inferred-module optimistic gate did not settle")
         assertEquals(1, scopes.size)
         assertEquals(setOf(":mod3"), scopes[0], "scoped to the changed module's closure, not full (null)")
+    }
+
+    @Test
+    fun `a branch missing from the hub is reported distinctly, not as a textual conflict`() {
+        val o = setup()
+        o.processBatch(listOf(PullRequest("ghost", ":mod1"))) // never created in the bare repo
+        val s = o.snapshot()
+        assertEquals(1, s["branchMissing"], "reported as a missing branch")
+        assertEquals(0, s["bouncedTextual"], "NOT mislabelled a textual conflict")
+        assertEquals(0, s["landed"], "nothing landed")
+        val st = o.prStatus("ghost")
+        assertEquals("missing", st?.state)
+        assertTrue(st?.terminal == true)
+    }
+
+    /** Create a PR that writes [content] to [relPath] (a source file, so it's NOT inert) and DECLARES [module]
+     *  (which may deliberately differ from the directory the file lives in, to model a mis-declaring agent). */
+    private fun createPrAt(branch: String, relPath: String, content: String, module: String?): PullRequest {
+        val wt = tmp.resolve("agent-$branch")
+        GitOps.git(bare, "worktree", "add", "-q", "--detach", wt.toString(), "main")
+        g(wt, "checkout", "-q", "-B", branch, "main")
+        val f = wt.resolve(relPath); Files.createDirectories(f.parent); Files.writeString(f, content)
+        g(wt, "add", "-A"); g(wt, "commit", "-q", "-m", branch)
+        GitOps.git(bare, "worktree", "remove", "--force", wt.toString())
+        return PullRequest(branch = branch, module = module)
+    }
+
+    @Test
+    fun `batched attribution blames the PR whose DIFF broke the module, not the mis-declarer`() {
+        // C8: attribute by the PR's actual diff, not its declared module. A declares :mod2 but its diff only
+        // touches :mod1 (clean); B declares :mod1 but its diff breaks :mod2 (BAD). Declared-module attribution
+        // would bounce the INNOCENT A (it declared the failing module); diff attribution correctly bounces B.
+        // Use .kt source files (a .txt would be inert -> the gate would be skipped). The gate flags a module
+        // red iff any file under it contains "BAD".
+        val ktGate = MergeGate { wt, modules, _ ->
+            val check = modules ?: allModules.toSet()
+            val failed = check.filter { m ->
+                val d = wt.resolve(dirOf(m))
+                Files.exists(d) && Files.walk(d).use { s -> s.anyMatch { Files.isRegularFile(it) && runCatching { Files.readString(it) }.getOrDefault("").contains("BAD") } }
+            }.toSet()
+            GateResult(failed.isEmpty(), failed)
+        }
+        setup(moduleDirs = moduleDirs)
+        val integ = tmp.resolve("integ")
+        val gates = (0..1).map { tmp.resolve("gate$it") }
+        val router0 = MergeRouter(MergeRouter.reverseDeps(allModules.associateWith { emptySet<String>() }), threshold = 0)
+        orch!!.shutdown()
+        val ob = MergeOrchestrator(bare, integ, gates, router0, ktGate, events, batchCap = 8, moduleDirs = moduleDirs).also { orch = it }
+        val a = createPrAt("a", "mod1/A.kt", "class A", ":mod2")  // diff -> :mod1 (clean), declares :mod2
+        val b = createPrAt("b", "mod2/B.kt", "BAD", ":mod1")      // diff -> :mod2 (breaks it), declares :mod1
+        ob.processBatch(listOf(a, b))
+        val s = ob.snapshot()
+        assertEquals(1, s["landed"], "the innocent mis-declarer A lands")
+        assertEquals(1, s["bouncedSemantic"], "the real (diff) culprit B is bounced")
+        assertEquals("bounced", ob.prStatus("b")?.state, "B (diff culprit) is bounced")
+        assertEquals("landed", ob.prStatus("a")?.state, "A (innocent mis-declarer) lands")
+    }
+
+    @Test
+    fun `a batch is NOT false-bounced when main was already red (C5)`() {
+        // C5: main is left red on :mod2 (standing in for a prior optimistic revert that conflicted). A clean PR
+        // touches :mod1; :mod2 depends on :mod1 so :mod2 is in the PR's gate scope and shows the PRE-EXISTING
+        // red. The PR touched NO failed module, and mainBase is itself red -> the PR is innocent: it must be
+        // RE-QUEUED, never bounced as the culprit (the cascade the fix prevents).
+        val ktGate = MergeGate { wt, modules, _ ->
+            val check = modules ?: allModules.toSet()
+            val failed = check.filter { m ->
+                val d = wt.resolve(dirOf(m))
+                Files.exists(d) && Files.walk(d).use { s -> s.anyMatch { Files.isRegularFile(it) && runCatching { Files.readString(it) }.getOrDefault("").contains("BAD") } }
+            }.toSet()
+            GateResult(failed.isEmpty(), failed)
+        }
+        setup(moduleDirs = moduleDirs)
+        val integ = tmp.resolve("integ")
+        val gates = (0..1).map { tmp.resolve("gate$it") }
+        // :mod2 depends on :mod1, so a change to :mod1 has closure {:mod1,:mod2}; threshold 0 -> BATCHED.
+        val fwd = mapOf(":mod1" to emptySet(), ":mod2" to setOf(":mod1"), ":mod3" to emptySet<String>())
+        val router0 = MergeRouter(MergeRouter.reverseDeps(fwd), threshold = 0)
+        orch!!.shutdown()
+        val ob = MergeOrchestrator(bare, integ, gates, router0, ktGate, events, batchCap = 8, moduleDirs = moduleDirs).also { orch = it }
+        // poison main: a BAD source file in :mod2, forced onto main (a prior revert that conflicted would leave
+        // exactly this — a red main no batch caused).
+        createPrAt("poison", "mod2/Poison.kt", "BAD", null)
+        GitOps.setBranch(bare, "main", GitOps.rev(bare, "poison"))
+        // an innocent PR touching only :mod1
+        ob.processBatch(listOf(createPrAt("g", "mod1/G.kt", "class G", null)))
+        val s = ob.snapshot()
+        assertEquals(0, s["bouncedSemantic"], "the innocent PR must NOT be bounced onto an already-red main")
+        assertEquals(0, s["landed"], "and it must not land onto a red main either")
+        assertTrue((s["queueDepth"] as Int) >= 1, "the innocent PR is re-queued (until main is repaired)")
+        assertEquals("queued", ob.prStatus("g")?.state, "its status is queued (retry), not bounced")
+    }
+
+    @Test
+    fun `per-PR status tracks a branch to its terminal outcome and is null for an unknown branch`() {
+        val o = setup()
+        createPr("ok1", ":mod1", "mod1 v2")
+        o.processBatch(listOf(PullRequest("ok1", ":mod1")))
+        assertTrue(o.awaitQuiescent(30_000))
+        val st = o.prStatus("ok1")
+        assertEquals("landed", st?.state); assertTrue(st?.terminal == true)
+        assertEquals(null, o.prStatus("never-submitted"), "an unknown branch has no record")
     }
 
     /** Read a module's code.txt at the current bare `main`. */

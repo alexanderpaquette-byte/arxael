@@ -94,8 +94,13 @@ class WarmExecutor(
         // Adjust BOTH semaphores under one lock so the reserved-lane invariant (normal = global - reservedHigh)
         // never has a transient window where a racing acquire sees a mismatched pair.
         synchronized(resizeLock) {
-            permits.adjustTo(target)
-            normalPermits.adjustTo(maxOf(1, target - config.reservedHigh))
+            // Never let the global bound drop to <= reservedHigh: that leaves fewer global permits than the
+            // reservation, so a normal caller could take the last global permit and starve the reserved high
+            // (merge-gate) lane. The config floor already enforces this for the governor, but clamp here too so
+            // even a direct/buggy caller can't void the invariant.
+            val eff = if (config.reservedHigh > 0) maxOf(target, config.reservedHigh + 1) else target
+            permits.adjustTo(eff)
+            normalPermits.adjustTo(maxOf(1, eff - config.reservedHigh))
         }
     }
 

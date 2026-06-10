@@ -158,7 +158,7 @@ that sizes itself*. Deep dives: [ARCHITECTURE.md](ARCHITECTURE.md), [SETUP.md](S
 
 ```mermaid
 flowchart TB
-    subgraph repo["arxael-dev-kit (Gradle, JVM 21 / Kotlin 1.9.24)"]
+    subgraph repo["arxael (Gradle, JVM 21 / Kotlin 1.9.24)"]
         settings["settings.gradle.kts<br/>includes :core"]:::cfg
         rootbuild["build.gradle.kts (root)<br/>plugin versions only"]:::cfg
         subgraph core[":core  (the daemon: executor + merge + autosize)"]

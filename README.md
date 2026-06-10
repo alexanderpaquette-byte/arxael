@@ -1,17 +1,26 @@
 # Arxael
 
-**A bring-your-own-gates orchestration layer for AI coding agents.** It runs *your project's* existing checks through one warm, bounded shared executor and a **merge gate that keeps `main` green** under parallel agent work — instead of each agent cold-starting its own build daemon and racing everyone else onto `main`. Multi-language (gradle, maven, pytest, cargo, go, vitest, npm, make, exec).
+**Run many AI coding agents on one box without melting it — and without them breaking `main`.** Arxael gives your whole agent fleet *one* warm, bounded, shared build/test executor (instead of each agent cold-starting its own and exhausting the box) plus a **merge gate that lands their PRs onto a shared `main` and auto-reverts anything that goes red**. A bring-your-own-gates orchestration layer: it runs *your project's* existing checks. Multi-language (gradle, maven, pytest, cargo, go, vitest, npm, make, exec).
+
+**You want this if** you run 3+ AI agents in parallel on a repo and they're either melting the machine or racing broken code onto `main`. **You don't if** it's a single agent, or you're happy with cloud CI on every push.
 
 > **Bring your own gates.** arxael does **not** replace your tests, CI, or quality gates — it runs the checks *you already trust*, just warm, bounded, and merge-safe under controlled concurrency. The comparison isn't arxael-vs-your-CI; it's *agents each hammering build/test commands independently* vs *one controlled execution layer coordinating them*.
 
 > ⚡ **Fresh box, just want it running?** One command: `bash scripts/bootstrap.sh` → verified-running in <10 min. See **[QUICKSTART.md](QUICKSTART.md)**.
 > 🤖 **AI agent with zero context?** Read **[AGENTS.md](AGENTS.md)** — the run-it-and-use-it contract.
+> 👀 **Want to *see* it work?** **[docs/FIRST-LAND.md](docs/FIRST-LAND.md)** — watch one PR land on a green `main` in 2 minutes.
 > 🧑 **Already set up, daily use?** `scripts/arxael up` / `status` / `logs` / `stop`. No jargon. See [docs/SETUP.md](docs/SETUP.md).
 > Already running? `curl -s 127.0.0.1:8723/` returns the live, self-describing API.
 
 ## The one-sentence pitch
 
 > Everyone else gives each agent its own cold, isolated box — or spreads one build across a cluster. We give the whole fleet **one warm, bounded, shared executor + a merge gate** on a box you own: bring your own tests and gates, and it keeps `main` green while many agents work in parallel.
+
+## Is my `main` safe?
+
+It's the first thing to ask of anything that lands code automatically. **Every PR is tested *merged onto the live `main`* and lands only if green — anything that goes red is auto-reverted (or, on the batched path, never lands at all).** The one assumption: every agent on the box is trusted (it's loopback-only, with no sandboxing *between* agents — see [LIMITATIONS](docs/LIMITATIONS.md#4)).
+
+Proven on a real OSS repo — google/gson, gated by gson's own Maven suite through the real merge orchestrator: **48/48 good PRs landed, 2/2 bad PRs caught, 0 reverts, 0 errors, `main` stayed green** (and ben-manes/caffeine via its own Gradle wrapper: 41/41 good, 2/2 bad, 0 reverts). Method + the trust model are in [docs/LIMITATIONS.md](docs/LIMITATIONS.md).
 
 ## The problem
 

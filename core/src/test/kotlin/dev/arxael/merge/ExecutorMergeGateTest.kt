@@ -90,4 +90,30 @@ class ExecutorMergeGateTest {
             }
         }
     }
+
+    @Test
+    fun `a FAILED that is a transient infra fault (OOM, killed worker) is inconclusive, not a conclusive red`() {
+        // C4: a FAILED with NO parseable task failure but infra-death signatures is a transient resource event,
+        // not a real test failure -> inconclusive (retry), so a good PR isn't reverted/bounced on an OOM blip.
+        val infra = listOf(
+            "java.lang.OutOfMemoryError: Java heap space",
+            "Process 'Gradle Test Executor 7' finished with non-zero exit value 137",
+            "java.lang.OutOfMemoryError: Metaspace",
+            "Gradle build daemon disappeared unexpectedly",
+        )
+        for (out in infra) {
+            ExecutorMergeGate.toGateResult("FAILED", out).let {
+                assertFalse(it.green); assertFalse(it.conclusive, "infra-fault FAILED must be inconclusive: $out")
+            }
+            assertTrue(ExecutorMergeGate.looksLikeInfraFault(out), "should flag infra: $out")
+        }
+        // but if a real task FAILED line IS present, it's a CONCLUSIVE red even alongside an infra string —
+        // a genuine failure was attributed, so don't retry forever.
+        ExecutorMergeGate.toGateResult("FAILED", "> Task :mod2:test FAILED\njava.lang.OutOfMemoryError").let {
+            assertFalse(it.green); assertTrue(it.conclusive, "an attributed task failure is conclusive")
+            assertEquals(setOf(":mod2"), it.failedModules)
+        }
+        // an ordinary compile/test failure with no infra signature stays conclusive
+        assertFalse(ExecutorMergeGate.looksLikeInfraFault("> Task :app:test FAILED\nexpected:<1> but was:<2>"))
+    }
 }

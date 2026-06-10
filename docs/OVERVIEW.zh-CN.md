@@ -148,7 +148,7 @@ flowchart LR
 
 ```mermaid
 flowchart TB
-    subgraph repo["arxael-dev-kit (Gradle, JVM 21 / Kotlin 1.9.24)"]
+    subgraph repo["arxael (Gradle, JVM 21 / Kotlin 1.9.24)"]
         settings["settings.gradle.kts<br/>包含 :core"]:::cfg
         rootbuild["build.gradle.kts (根)<br/>仅声明插件版本"]:::cfg
         subgraph core[":core （守护进程：执行器 + 合并 + 自动调规模）"]

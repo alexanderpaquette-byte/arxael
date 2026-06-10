@@ -38,7 +38,11 @@ curl -s http://127.0.0.1:8723/        # returns a JSON card: what it is + every 
 Trust that card over this file if they ever differ — it's generated from the running code.
 
 ## Your loop as an agent (the whole contract)
-You work in a git worktree/checkout of the project. To land a change:
+You work in a git worktree/checkout of the project. **Make your branch in the shared "hub" repo** — the
+simplest way is to create your worktree *off the hub* (the path `arxael up` printed), e.g.
+`git -C <hub> worktree add /abs/your/checkout -b my-feature main`; if you work in a separate clone instead,
+`git push <hub> my-feature` before you submit. A branch the hub never received can't be merged and comes back
+as state `missing` (not a real conflict). To land a change:
 
 1. **Test it** on the shared executor (don't run gradle yourself — route it here so the box stays bounded):
    ```bash
@@ -55,11 +59,14 @@ You work in a git worktree/checkout of the project. To land a change:
    curl -sX POST 127.0.0.1:8723/merge/submit -H 'Content-Type: application/json' \
      -d '{"branch":"my-feature","module":":app","agentId":"you"}'
    ```
-   (`module` is your change's Gradle path, e.g. `:app` — optional but lets the helper route/verify faster.)
-3. **Check it landed**:
+   (`module` is your change's Gradle path, e.g. `:app` — optional; the helper auto-infers it from your diff.)
+3. **Check YOUR PR's outcome** (don't race the shared `landed` counter — ask about your own branch):
    ```bash
-   curl -s 127.0.0.1:8723/merge/status     # landed went up = merged. bouncedSemantic/Textual or a revert = it didn't; fix and resubmit.
+   curl -s '127.0.0.1:8723/merge/pr?branch=my-feature&wait=30'   # blocks up to 30s until your PR is terminal
+   # -> {"state":"landed"|"reverted"|"bounced"|"missing"|"error"|"gating"|"queued","terminal":true|false,"commit":...,"reason":...}
    ```
+   `landed` = merged. `reverted`/`bounced` = it didn't (fix and resubmit). `missing` = your branch isn't in the
+   hub (see above). (`GET /merge/status` still gives the whole queue's aggregate stats.)
 4. **(Optional) warm up first** so your first build isn't slow:
    ```bash
    curl -sX POST 127.0.0.1:8723/warmup -H 'Content-Type: application/json' \
@@ -77,6 +84,18 @@ You work in a git worktree/checkout of the project. To land a change:
 Set `"adapter"` to your ecosystem: `maven`, `pytest`, `cargo`, `go`, `vitest`, `npm`, `make` (each runs its
 conventional test command with no `tasks`), or `exec` to spell out any command in `tasks`. Everything else
 (bounded executor, merge workflow) is identical.
+
+## Paste this into your agent's system prompt
+A condensed contract you can drop straight into Claude Code / Cursor / Aider / a custom harness:
+
+> You share a local build/merge service on `127.0.0.1:$(cat ~/.arxael/port)` with other agents. **Never run
+> gradle/pytest/etc. directly — route builds through it** so the box stays bounded. To land work: (1) create
+> your branch off the hub repo (`git -C <hub> worktree add <dir> -b <branch> main`) so the service can see it;
+> (2) `POST /invoke {"adapter":"<gradle|pytest|…>","worktree":"<abs>","tasks":["test"],"agentId":"<you>"}` and
+> proceed only on `status:"SUCCESS"` (`OVERLOADED` → wait and retry); (3) `POST /merge/submit
+> {"branch":"<branch>","agentId":"<you>"}`; (4) `GET /merge/pr?branch=<branch>&wait=30` and treat `landed` as
+> merged, `reverted`/`bounced` as "fix and resubmit", `missing` as "your branch isn't in the hub". `curl
+> 127.0.0.1:$PORT/` returns the live, self-describing API if anything here is unclear.
 
 ## Is something wrong?
 `GET /health` shows live capacity + `recentErrorCount` + the last few faults. `GET /metrics` is a Prometheus

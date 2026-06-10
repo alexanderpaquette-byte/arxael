@@ -171,9 +171,15 @@ data class BoxConfig(
             // box anyway. A negative numerator (headroom > RAM) floors to 0 -> memBound 1 (most conservative).
             val memBound = (((usableRamMb - ramHeadroomMb).coerceAtLeast(0) * pct) / perBuild)
                 .toLong().coerceIn(1L, MEM_BOUND_CAP).toInt()
-            val maxConcurrent = override ?: max(1, min(coreBound, memBound))
+            // A non-positive override (typo / hostile ARXAEL_MAX_CONCURRENT) must not flow through to
+            // maxConcurrent<=0 -> a Semaphore(0) that grants nothing and silently wedges the daemon (every
+            // /invoke waits out the acquire timeout and returns OVERLOADED). Ignore it and fall back to the
+            // computed bound, exactly like every other numeric input. (The max(1,...) below only guarded the
+            // computed branch, never the override.)
+            val ov = override?.takeIf { it > 0 }
+            val maxConcurrent = ov ?: max(1, min(coreBound, memBound))
             val binding = when {
-                override != null -> "override"
+                ov != null -> "override"
                 memBound < coreBound -> "memory"
                 else -> "cores"
             }
@@ -216,7 +222,9 @@ data class BoxConfig(
                 ?: 1536L) // floor at 1 MB: a 0/negative env or stale footprint file must not blow up memBound
 
             // Explicit override wins (benchmark sweeps); otherwise fail closed on whichever bound is lower.
-            val override = env("ARXAEL_MAX_CONCURRENT")?.toIntOrNull()
+            // takeIf{>0} for the same reason as the siblings above: a 0/negative override must not wedge the box
+            // (and computeBounds guards it too, so a direct caller is safe regardless).
+            val override = env("ARXAEL_MAX_CONCURRENT")?.toIntOrNull()?.takeIf { it > 0 }
             val budgetPct = (env("ARXAEL_BUDGET_PCT")?.toIntOrNull() ?: 100).coerceIn(1, 100)
             val bounds = computeBounds(cores, agentsPerCore, usableRamMb, ramHeadroomMb, perBuildFootprintMb, override, budgetPct)
 
@@ -231,10 +239,18 @@ data class BoxConfig(
             // but is independently tunable — legitimate queueing behind tens-of-seconds builds must not
             // be mistaken for overload (the benchmark raises it so OVERLOADED reflects real saturation).
             val acquireTimeoutMs = env("ARXAEL_ACQUIRE_TIMEOUT_MS")?.toLongOrNull() ?: (watchdogIntervalMs * 30)
-            val reservedHigh = env("ARXAEL_RESERVED_HIGH")?.toIntOrNull() ?: 0
+            // Reserve permits for the high-priority lane (merge-gate landings), but never more than
+            // maxConcurrent-1: the normal lane (and the bound) must keep at least one slot, or the reservation
+            // is degenerate (you can't reserve every permit). Clamped against the resolved bound.
+            val reservedHigh = (env("ARXAEL_RESERVED_HIGH")?.toIntOrNull() ?: 0).coerceIn(0, maxOf(0, bounds.maxConcurrent - 1))
             val daemonIdleSec = env("ARXAEL_DAEMON_IDLE_SEC")?.toLongOrNull() ?: 120L
             val adaptive = env("ARXAEL_ADAPTIVE")?.lowercase() != "false" // default on
-            val concurrencyFloor = maxOf(1, env("ARXAEL_CONCURRENCY_FLOOR")?.toIntOrNull() ?: 1)
+            // When a high lane is reserved, the live bound must never shrink to <= reservedHigh, or a normal
+            // caller can take the last global permit and starve the reserved merge-gate lane (the exact thing
+            // the reservation exists to prevent). So the floor is at least reservedHigh+1 (one protected high
+            // slot + one normal), overriding a lower operator-requested floor.
+            val minFloor = if (reservedHigh > 0) reservedHigh + 1 else 1
+            val concurrencyFloor = maxOf(minFloor, env("ARXAEL_CONCURRENCY_FLOOR")?.toIntOrNull() ?: minFloor)
             // Hard ceiling: operator-set, else the CPU-derived bound (memory pulls it down, slack grows it back).
             val concurrencyCeiling = maxOf(
                 concurrencyFloor,

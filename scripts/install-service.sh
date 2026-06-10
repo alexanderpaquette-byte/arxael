@@ -56,6 +56,10 @@ ExecStart=$LAUNCHER
 # crash recovery: on restart the PrJournal re-enqueues + re-gates unfinished PRs (no unverified change on main)
 Restart=always
 RestartSec=2
+# Bound a graceful stop: /shutdown closes worktree-servers, which can block on an in-flight build. Give it up
+# to 60s to drain (a bit over the orchestrator's 30s gate-drain) before SIGKILL, instead of systemd's 90s
+# default. Either way ExecStopPost still runs afterward, so daemons are reaped even on a hard kill.
+TimeoutStopSec=60
 # clean up this daemon's gradle build-daemons on stop (scoped to homes under its state dir)
 ExecStopPost=$REPO/scripts/reap-daemons.sh
 

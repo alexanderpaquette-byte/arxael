@@ -62,6 +62,13 @@ object GitOps {
     fun setBranch(bare: Path, branch: String, commit: String): Boolean =
         ok(bare, "branch", "-f", branch, commit)
 
+    /** True iff [branch] exists as a local branch ref in [repo]. The orchestrator merges PR branches by name,
+     *  so a branch the hub never received (the agent worked in a separate checkout and never pushed / never
+     *  branched off the hub) would otherwise fail the merge and be mislabelled a "textual conflict". This lets
+     *  the orchestrator give a distinct, actionable signal instead. */
+    fun branchExists(repo: Path, branch: String): Boolean =
+        ok(repo, "rev-parse", "--verify", "--quiet", "refs/heads/$branch")
+
     /**
      * The repo-relative paths a [range] changed (e.g. "main...feature" = the branch's own changes since it
      * diverged from main). Ref-based, so it works in a BARE repo (no worktree). Empty on any error — the

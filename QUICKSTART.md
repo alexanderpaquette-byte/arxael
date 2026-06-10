@@ -41,7 +41,7 @@ The bootstrap just starts the shared helper. To put it to work, go into a projec
 branch) and connect it:
 ```bash
 cd /path/to/your/project
-/path/to/arxael-dev-kit/scripts/arxael up      # "✓ Connected your-project (N modules). Agents can now submit changes."
+/path/to/arxael/scripts/arxael up      # the arxael repo you cloned above; "✓ Connected your-project (N modules)."
 ```
 Turn it off any time with `scripts/arxael stop` (it cleans up after itself).
 

@@ -74,6 +74,19 @@ class BoxConfigBoundsTest {
     }
 
     @Test
+    fun `a non-positive override is ignored, never wedging the box`() {
+        // ARXAEL_MAX_CONCURRENT=0/negative (typo / hostile) must NOT produce maxConcurrent<=0 -> a Semaphore(0)
+        // that grants nothing and silently wedges the daemon. Fall back to the computed bound, like every other
+        // numeric input, and do NOT mislabel the binding as "override".
+        for (bad in listOf(0, -1, -64)) {
+            val b = BoxConfig.computeBounds(cores = 8, agentsPerCore = 1.0,
+                usableRamMb = 64_000, ramHeadroomMb = 6_400, perBuildFootprintMb = 1536, override = bad)
+            assertEquals(8, b.maxConcurrent, "override=$bad must be ignored; bound falls back to cores")
+            assertEquals("cores", b.bindingConstraint, "override=$bad must not be labelled 'override'")
+        }
+    }
+
+    @Test
     fun `bound is never below 1 even on a tiny box`() {
         val b = BoxConfig.computeBounds(
             cores = 1, agentsPerCore = 0.0,

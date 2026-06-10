@@ -24,6 +24,19 @@ data class PullRequest(
 )
 
 /**
+ * The current lifecycle state of a submitted PR, queryable via `GET /merge/pr?branch=` so an agent can ask
+ * "did MY branch land?" directly instead of racing the aggregate `landed` counter (which, with N concurrent
+ * agents, can't tell whose PR moved it). [terminal] = the PR has reached a final state and won't change.
+ *
+ * States: `queued` (waiting) · `gating` (optimistically landed, async verify in flight; or batched-in-gate) ·
+ * `landed` (on main, verified/batched-landed — terminal) · `reverted` (was landed, gate red, reverted off —
+ * terminal) · `bounced` (never landed: textual conflict or attributed culprit — terminal) · `missing` (branch
+ * not in the hub repo — terminal) · `error` (gate gave up / revert conflicted — terminal). `unknown` is
+ * returned by the API for a branch the orchestrator has no record of (evicted or never submitted).
+ */
+data class PrOutcome(val state: String, val terminal: Boolean, val commit: String? = null, val reason: String? = null)
+
+/**
  * Outcome of testing a merge candidate. [failedModules] feeds culprit attribution on a red batch.
  * [conclusive] = the gate actually ran the tests and got a verdict. When it's false (the substrate was
  * OVERLOADED, or an infra ERROR), `green` is meaningless: the orchestrator must NOT bounce/revert a PR as if

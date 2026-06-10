@@ -87,17 +87,19 @@ class CommandAdapterTest {
 
     @Test
     fun `a default command can be overridden per deployment via env`() {
-        // ARXAEL_MAVEN_CMD scopes a multi-module Maven build's gate to one module, no code change
-        val env = mapOf("ARXAEL_MAVEN_CMD" to "mvn -q -pl gson -am test")
+        // ARXAEL_<NAME>_CMD replaces the built-in default (e.g. to scope a multi-module gate to one module).
+        // Point it at a binary that CANNOT exist so the override is proven deterministically on ANY box: the
+        // process spawn fails -> an infra fault is thrown whose message names the override binary (not the
+        // built-in `mvn`). Using a real `mvn` here would be environment-fragile — if a real mvn is installed it
+        // merely exits non-zero (no pom) instead of throwing, and the test would flap.
+        val env = mapOf("ARXAEL_MAVEN_CMD" to "arxael-nonexistent-build-tool -q test")
         val maven = CommandAdapter.languageDefaults { env[it] }.first { it.name == "maven" }
         val s = maven.open(tmp, tmp.resolve("o"), cfg())
-        // it runs the overridden command (here the binary won't exist -> infra fault thrown, proving the
-        // override took effect rather than the built-in `mvn -q test`)
         val out = StringBuilder()
         var ran = ""
         try { s.run(InvokeSpec(adapter = "maven", worktree = tmp.toString())) { out.append(it) } }
         catch (e: Exception) { ran = e.message ?: "" }
-        assertTrue(ran.contains("mvn"), "override command should be attempted: $ran")
+        assertTrue(ran.contains("arxael-nonexistent-build-tool"), "override command should be attempted: $ran")
         // a blank override falls back to the built-in
         assertEquals(1, CommandAdapter.languageDefaults { null }.count { it.name == "maven" })
     }

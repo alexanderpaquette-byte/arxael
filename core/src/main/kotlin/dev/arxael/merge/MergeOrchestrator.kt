@@ -74,7 +74,47 @@ class MergeOrchestrator(
     private val mBatchLanded = AtomicInteger(0)
     private val mErrors = AtomicInteger(0) // loop/gate/revert faults — surfaced in snapshot so dark spots show
     private val mGatesSkipped = AtomicInteger(0) // gates skipped by change-awareness (inert/doc-only changes)
+    private val mBranchMissing = AtomicInteger(0) // PRs whose branch wasn't in the hub (distinct from textual)
     private val ttlNanos = ArrayDeque<Long>() // recent time-to-land samples (bounded; guarded by itself)
+
+    // Per-PR lifecycle, keyed by branch, so an agent can query "did MY branch land?" (GET /merge/pr) instead of
+    // racing the aggregate counter. Bounded LRU (access-order false = insertion order) so a long-lived daemon
+    // can't grow it without bound; the data already exists in events.jsonl, this just makes it queryable.
+    private val prOutcomes = object : LinkedHashMap<String, PrOutcome>(256, 0.75f, false) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, PrOutcome>): Boolean = size > MAX_PR_OUTCOMES
+    }
+
+    private fun setPr(branch: String, state: String, terminal: Boolean, commit: String? = null, reason: String? = null) {
+        synchronized(prOutcomes) { prOutcomes[branch] = PrOutcome(state, terminal, commit, reason) }
+    }
+
+    /** The last-known lifecycle state of [branch], or null if the orchestrator has no record of it. */
+    fun prStatus(branch: String): PrOutcome? = synchronized(prOutcomes) { prOutcomes[branch] }
+
+    /** Block until [branch] reaches a TERMINAL state or [timeoutMs] elapses (long-poll for the agent's land
+     *  loop). Returns the last-known outcome (possibly null/non-terminal on timeout). Polls cheaply — landings
+     *  are far rarer than this loop, so a tight wait is fine and avoids a condition-variable per branch. */
+    fun prStatusWait(branch: String, timeoutMs: Long): PrOutcome? {
+        val deadline = System.nanoTime() + timeoutMs * 1_000_000
+        while (true) {
+            val o = prStatus(branch)
+            if (o != null && o.terminal) return o
+            if (System.nanoTime() >= deadline) return o
+            Thread.sleep(25)
+        }
+    }
+
+    /** A submitted branch that the hub repo doesn't have: report it as a DISTINCT, actionable outcome (not the
+     *  misleading "textual conflict" a name-not-found merge would otherwise be counted as) and finish it. */
+    private fun reportMissingBranch(pr: PullRequest) {
+        mBranchMissing.incrementAndGet()
+        journal?.done(pr.branch)
+        setPr(pr.branch, "missing", true, reason = "branch-not-in-hub")
+        events.emit("merge_branch_missing", mapOf(
+            "branch" to pr.branch, "agent" to pr.agentId,
+            "warn" to "branch not found in the shared hub repo — create it as a worktree off the hub (or push it) before /merge/submit",
+        ))
+    }
 
     /** Enqueue a PR. Returns false if this orchestrator has been shut down (e.g. mid re-register) — the caller
      *  then rejects the submit (agent retries) instead of queuing into a stopped loop where it'd never process. */
@@ -86,6 +126,7 @@ class MergeOrchestrator(
         journal?.submit(pr)
         mSubmitted.incrementAndGet()
         queue.add(pr)
+        setPr(pr.branch, "queued", false)
         events.emit("merge_submit", mapOf("branch" to pr.branch, "module" to pr.module, "agent" to pr.agentId))
         return true
     }
@@ -101,7 +142,7 @@ class MergeOrchestrator(
         events.emit("merge_recover", mapOf("count" to pending.size))
         // Re-queue directly — these are ALREADY in the journal, so don't re-journal (avoids a redundant write
         // and a journal hiccup aborting recovery). The re-merge of an already-landed PR is a no-op; its gate re-runs.
-        pending.forEach { mSubmitted.incrementAndGet(); queue.add(it) }
+        pending.forEach { mSubmitted.incrementAndGet(); queue.add(it); setPr(it.branch, "queued", false, reason = "recovered") }
     }
 
     /** Pull up to [batchCap] queued PRs and process them; returns how many were pulled (0 if idle). */
@@ -118,10 +159,28 @@ class MergeOrchestrator(
 
     /** Route a pulled set: small-closure PRs land optimistically; the rest go through the batched gate. */
     fun processBatch(prs: List<PullRequest>) {
-        val optimistic = prs.filter { it.module != null && router.route(it.module) == MergeRoute.OPTIMISTIC }
-        val batched = prs.filterNot { it in optimistic }
+        // A branch the hub never received can't be merged by name -> report it distinctly (not as a textual
+        // conflict) and drop it; only branches present in the hub proceed.
+        val (present, missing) = prs.partition { GitOps.branchExists(bare, it.branch) }
+        missing.forEach { reportMissingBranch(it) }
+        // Auto-infer the module for a PR that didn't declare one, from its actual diff: if it touches exactly
+        // one subproject, route by that module (so a null-module single-module change gets the optimistic fast
+        // path + module-scoped gate instead of being forced batched). Multi-module / root changes stay null
+        // (routed batched, the sound default). Verify-then-trust still gates the inferred module's first N
+        // changes against the full project, so this doesn't weaken soundness.
+        val resolved = present.map { pr -> if (pr.module == null) pr.copy(module = inferModule(pr)) else pr }
+        val optimistic = resolved.filter { it.module != null && router.route(it.module) == MergeRoute.OPTIMISTIC }
+        val batched = resolved.filterNot { it in optimistic }
         optimistic.forEach { landOptimistic(it) }
         if (batched.isNotEmpty()) processBatched(batched)
+    }
+
+    /** Infer a PR's module from its diff: the single subproject it touches, or null if it touches none, many,
+     *  a root/shared path, or there's no module graph (then it stays batched — the sound default). */
+    private fun inferModule(pr: PullRequest): String? {
+        if (moduleDirs.isEmpty()) return null
+        val mods = ChangePolicy.affectedModules(GitOps.changedFiles(bare, "main...${pr.branch}"), moduleDirs) ?: return null
+        return mods.singleOrNull()
     }
 
     // ---- optimistic path: land now, verify async, auto-revert ----
@@ -135,10 +194,12 @@ class MergeOrchestrator(
             head
         }
         mLanded.incrementAndGet(); mOptLanded.incrementAndGet(); recordTtl(pr)
+        setPr(pr.branch, "gating", false, commit = landed) // on main, async verify pending
         events.emit("merge_land_optimistic", mapOf("branch" to pr.branch, "module" to pr.module, "commit" to landed))
         // No-test change (docs/text/images only) -> it cannot break a test, so skip the async gate entirely.
         if (moduleDirs.isNotEmpty() && ChangePolicy.isNoTestChange(changed)) {
             mGatesSkipped.incrementAndGet(); journal?.done(pr.branch)
+            setPr(pr.branch, "landed", true, commit = landed, reason = "no-test-change")
             events.emit("merge_gate_skipped", mapOf("branch" to pr.branch, "why" to "no-test-change", "files" to changed.size))
             return
         }
@@ -164,13 +225,19 @@ class MergeOrchestrator(
             if (res != null && res.green) {
                 if (scope == null) recordConfirmation(pr) // a full gate passed -> this module is one step more trusted
                 journal?.done(pr.branch)
+                setPr(pr.branch, "landed", true, commit = commit)
                 events.emit("merge_gate_green", mapOf("branch" to pr.branch, "module" to pr.module))
                 return
             }
             if (res != null && res.conclusive) {
                 // A genuine failure -> revert this commit and bounce (terminal). If the revert CONFLICTS, the
                 // bad commit is still on main -> surface loudly (don't pretend it bounced).
-                if (revertOrSurface(wt, commit, pr)) mBouncedSemantic.incrementAndGet()
+                if (revertOrSurface(wt, commit, pr)) {
+                    mBouncedSemantic.incrementAndGet()
+                    setPr(pr.branch, "reverted", true, commit = commit, reason = "gate-red")
+                } else {
+                    setPr(pr.branch, "error", true, commit = commit, reason = "revert-conflict-main-still-red")
+                }
                 journal?.done(pr.branch)
                 return
             }
@@ -189,6 +256,7 @@ class MergeOrchestrator(
                 // Exhausted: still couldn't verify. Fail closed — revert the un-gated commit and surface.
                 revertOrSurface(wt, commit, pr)
                 mErrors.incrementAndGet(); journal?.done(pr.branch)
+                setPr(pr.branch, "error", true, commit = commit, reason = "gate-inconclusive-exhausted")
                 events.emit("merge_retry_exhausted", mapOf("branch" to pr.branch, "attempts" to pr.gateAttempts))
             }
         } finally {
@@ -206,9 +274,11 @@ class MergeOrchestrator(
         if (pr.gateAttempts >= MAX_GATE_RETRIES) {
             mErrors.incrementAndGet()
             journal?.done(pr.branch) // terminal: stop retrying; the agent can resubmit later
+            setPr(pr.branch, "error", true, reason = "retry-exhausted-$why")
             events.emit("merge_retry_exhausted", mapOf("branch" to pr.branch, "attempts" to pr.gateAttempts, "why" to why))
         } else {
             queue.add(pr.copy(gateAttempts = pr.gateAttempts + 1))
+            setPr(pr.branch, "queued", false, reason = "retry-$why")
             events.emit("merge_retry", mapOf("branch" to pr.branch, "attempt" to pr.gateAttempts + 1, "why" to why))
         }
     }
@@ -256,6 +326,24 @@ class MergeOrchestrator(
         }
     }
 
+    /**
+     * Is [mainBase] itself RED over [scope], independent of anything merged on top? Used by the C5 guard to
+     * tell a pre-existing broken main from a fresh batch failure. Returns null if it can't be checked right now
+     * (no free gate worktree) — the caller then proceeds as before (no regression). Best-effort and cheap: it
+     * only runs when a red batch failed module(s) none of its PRs touched (the suspicious case).
+     */
+    private fun mainBaseRed(mainBase: String, scope: Set<String>?): Boolean? {
+        val wt = freeGateWts.poll() ?: return null
+        return try {
+            synchronized(gitLock) {
+                GitOps.git(wt, "checkout", "-q", "-B", "__mainred", mainBase)
+                GitOps.git(wt, "reset", "-q", "--hard", mainBase)
+            }
+            val r = runCatching { gate.test(wt, scope, "mainred-${mainBase.take(8)}") }.getOrNull()
+            if (r == null || !r.conclusive) null else !r.green
+        } finally { freeGateWts.put(wt) }
+    }
+
     /** Revert [commit] from main using gate worktree [wt]; true if main was updated. Holds [gitLock]. */
     private fun revertFromMain(wt: Path, commit: String): Boolean = synchronized(gitLock) {
         GitOps.git(wt, "checkout", "-q", "-B", "__rev", "main")
@@ -280,7 +368,11 @@ class MergeOrchestrator(
             mainBase = GitOps.rev(integ, "HEAD")
             for (pr in prs) {
                 val m = GitOps.git(integ, "merge", "--no-ff", "-m", "merge ${pr.branch}", pr.branch)
-                if (m.ok) merged.add(pr) else { GitOps.git(integ, "merge", "--abort"); mBouncedTextual.incrementAndGet(); journal?.done(pr.branch) }
+                if (m.ok) merged.add(pr) else {
+                    GitOps.git(integ, "merge", "--abort"); mBouncedTextual.incrementAndGet(); journal?.done(pr.branch)
+                    setPr(pr.branch, "bounced", true, reason = "textual-conflict")
+                    events.emit("merge_bounce_textual", mapOf("branch" to pr.branch))
+                }
             }
             if (merged.isEmpty()) return
             GitOps.rev(integ, "HEAD")
@@ -292,7 +384,7 @@ class MergeOrchestrator(
         if (moduleDirs.isNotEmpty() && ChangePolicy.isNoTestChange(changed)) {
             if (landBatch(head, mainBase, merged)) {
                 mLanded.addAndGet(merged.size); mBatchLanded.addAndGet(merged.size); mGatesSkipped.incrementAndGet()
-                merged.forEach { recordTtl(it); journal?.done(it.branch) }
+                merged.forEach { recordTtl(it); journal?.done(it.branch); setPr(it.branch, "landed", true, commit = head, reason = "no-test-change") }
                 events.emit("merge_land_batch_skipped", mapOf("count" to merged.size, "why" to "no-test-change"))
             }
             return
@@ -311,7 +403,7 @@ class MergeOrchestrator(
         if (res.green) {
             if (landBatch(head, mainBase, merged)) {
                 mLanded.addAndGet(merged.size); mBatchLanded.addAndGet(merged.size)
-                merged.forEach { recordTtl(it); journal?.done(it.branch) }
+                merged.forEach { recordTtl(it); journal?.done(it.branch); setPr(it.branch, "landed", true, commit = head) }
                 events.emit("merge_land_batch", mapOf("count" to merged.size, "head" to head))
             }
             return
@@ -322,26 +414,60 @@ class MergeOrchestrator(
             merged.forEach { requeueForRetry(it, "batch-inconclusive") }
             return
         }
-        // conclusive red batch
-        if (merged.size == 1) {
-            mBouncedSemantic.incrementAndGet()
-            journal?.done(merged.first().branch)
-            events.emit("merge_bounce_culprit", mapOf("branch" to merged.first().branch, "module" to merged.first().module))
-            return
-        }
-        // Culprit attribution is only trustworthy if EVERY PR's module is known: a null-module PR could be
-        // the real cause yet get blamed on another PR that happens to own a failed module. If any module is
-        // unknown, skip attribution and use the safe per-PR fallback.
+        // conclusive red batch.
         // The modules that were RED in THIS gate — every downstream re-test (remainder or bisected half) must
         // gate over AT LEAST these, so a break carried by undeclared coupling can't escape a narrowed re-test.
         val failScope = closureScopeOf(res.failedModules)
-        val attributable = merged.none { it.module == null }
-        val culprits = if (attributable) merged.filter { it.module in res.failedModules } else emptyList()
+        // Per-PR ground-truth modules from each PR's diff (used by both the C5 already-red guard and culprit
+        // attribution). Empty when there's no module graph (then attribution falls back to the declared module).
+        val prMods: Map<PullRequest, Set<String>?> =
+            if (moduleDirs.isNotEmpty()) merged.associateWith { ChangePolicy.affectedModules(GitOps.changedFiles(bare, "main...${it.branch}"), moduleDirs) }
+            else emptyMap()
+        // C5 — don't false-bounce innocent PRs onto an ALREADY-red main. If the gate failed module(s) that NO
+        // PR in this batch touched, the red is either pre-existing on main (a prior optimistic revert conflicted
+        // and left a bad commit) or undeclared coupling FROM this batch. Disambiguate by gating mainBase itself:
+        // if mainBase is red over the failed scope, the breakage pre-existed -> these PRs are innocent, so
+        // RE-QUEUE them (don't bounce — bouncing would amplify one broken main into a stream of false culprits,
+        // and never lands red since the batch gate is red). If mainBase is green, it IS the batch's coupling ->
+        // fall through to attribution/bisection (the widened re-test isolates it).
+        if (prMods.isNotEmpty() && res.failedModules.isNotEmpty() && merged.all { prMods[it] != null } &&
+            merged.none { (prMods[it] ?: emptySet()).any { m -> m in res.failedModules } } &&
+            mainBaseRed(mainBase, failScope) == true
+        ) {
+            events.emit("merge_main_already_red", mapOf(
+                "count" to merged.size, "failedModules" to res.failedModules.toString(),
+                "warn" to "main was already red over module(s) no PR in this batch touched — NOT bouncing these PRs; re-queuing until main is repaired",
+            ))
+            merged.forEach { requeueForRetry(it, "main-already-red") }
+            return
+        }
+        if (merged.size == 1) {
+            mBouncedSemantic.incrementAndGet()
+            journal?.done(merged.first().branch)
+            setPr(merged.first().branch, "bounced", true, reason = "gate-red")
+            events.emit("merge_bounce_culprit", mapOf("branch" to merged.first().branch, "module" to merged.first().module))
+            return
+        }
+        // Attribute by the PR's ACTUAL diff (ground truth), not its declared module — a mis-declaring agent
+        // would otherwise get an innocent PR (that happens to own a failed module) bounced in its place. With a
+        // module graph a PR is a culprit iff one of ITS diff modules is red. Attribution is only trustworthy if
+        // every PR maps to a known module set — a PR whose diff touches a root/shared path (affectedModules ==
+        // null) could break anything, so fall back to bisection. Without a graph, attribute by declared module.
+        val attributable: Boolean
+        val culprits: List<PullRequest>
+        if (prMods.isNotEmpty()) {
+            attributable = merged.all { prMods[it] != null }
+            culprits = if (attributable) merged.filter { (prMods[it] ?: emptySet()).any { m -> m in res.failedModules } } else emptyList()
+        } else {
+            attributable = merged.none { it.module == null }
+            culprits = if (attributable) merged.filter { it.module in res.failedModules } else emptyList()
+        }
         if (culprits.isNotEmpty() && culprits.size < merged.size) {
             // attribution pinpointed the bad PRs -> bounce them, re-test the remainder soundly (one pass)
             culprits.forEach {
                 mBouncedSemantic.incrementAndGet()
                 journal?.done(it.branch)
+                setPr(it.branch, "bounced", true, reason = "gate-red-culprit")
                 events.emit("merge_bounce_culprit", mapOf("branch" to it.branch, "module" to it.module))
             }
             processBatched(merged.filterNot { it in culprits }, inheritedFailScope = failScope)
@@ -397,6 +523,7 @@ class MergeOrchestrator(
         GitOps.git(integ, "merge", "--abort")
         mBouncedTextual.incrementAndGet()
         journal?.done(pr.branch)
+        setPr(pr.branch, "bounced", true, reason = "textual-conflict")
         events.emit("merge_bounce_textual", mapOf("branch" to pr.branch))
         return false
     }
@@ -485,6 +612,7 @@ class MergeOrchestrator(
             "batchLanded" to mBatchLanded.get(),
             "bouncedTextual" to mBouncedTextual.get(),
             "bouncedSemantic" to mBouncedSemantic.get(),
+            "branchMissing" to mBranchMissing.get(), // submitted branches the hub never received (distinct signal)
             "reverts" to mReverts.get(),
             "integTests" to mIntegTests.get(),
             "inFlightGates" to inFlightGates.get(),
@@ -501,6 +629,7 @@ class MergeOrchestrator(
 
     private companion object {
         const val MAX_TTL_SAMPLES = 2048 // recent time-to-land window for the p50 metric (bounds memory)
+        const val MAX_PR_OUTCOMES = 4096 // bounded LRU of per-branch lifecycle outcomes for GET /merge/pr
         const val MAX_GATE_RETRIES = 5   // give up re-queuing a PR after this many inconclusive/fault gates
         const val GATE_DRAIN_MS = 30_000L // shutdown: how long to let in-flight gates settle before forcing the pool down
     }

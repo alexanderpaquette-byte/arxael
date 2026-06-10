@@ -56,7 +56,7 @@ class BoxConfigFromEnvTest {
                 "ARXAEL_CORES" to "16", "ARXAEL_USABLE_RAM_MB" to "64000", "ARXAEL_AGENTS_PER_CORE" to "2.0",
                 "ARXAEL_BUDGET_PCT" to "50", "ARXAEL_PER_WORKTREE_HOME" to "true", "ARXAEL_BUILD_CACHE" to "false",
                 "ARXAEL_RESERVED_HIGH" to "3", "ARXAEL_DAEMON_IDLE_SEC" to "60", "ARXAEL_ADAPTIVE" to "false",
-                "ARXAEL_CONCURRENCY_FLOOR" to "2", "ARXAEL_CONCURRENCY_CEILING" to "20",
+                "ARXAEL_CONCURRENCY_FLOOR" to "4", "ARXAEL_CONCURRENCY_CEILING" to "20",
                 "ARXAEL_ACQUIRE_TIMEOUT_MULT" to "6", "ARXAEL_PER_BUILD_MB" to "2048",
             ),
         )
@@ -64,10 +64,10 @@ class BoxConfigFromEnvTest {
         assertEquals(50, c.budgetPct)
         assertTrue(c.perWorktreeHome)
         assertFalse(c.buildCache)
-        assertEquals(3, c.reservedHigh)
+        assertEquals(3, c.reservedHigh) // <= maxConcurrent(14)-1, read as-is
         assertEquals(60L, c.daemonIdleSec)
         assertFalse(c.adaptive)
-        assertEquals(2, c.concurrencyFloor)
+        assertEquals(4, c.concurrencyFloor) // requested 4 >= reservedHigh+1, so read as-is
         assertEquals(20, c.concurrencyCeiling)
         assertEquals(6, c.acquireTimeoutMultiplier)
         assertEquals(2048L, c.perBuildFootprintMb)
@@ -93,5 +93,31 @@ class BoxConfigFromEnvTest {
         assertEquals(5, cfg(mapOf("ARXAEL_CORES" to "8", "ARXAEL_USABLE_RAM_MB" to "16000", "ARXAEL_MAX_CONCURRENT" to "5")).maxConcurrent)
         // budget over 100 is clamped to 100 (whole machine)
         assertEquals(8, cfg(mapOf("ARXAEL_CORES" to "8", "ARXAEL_USABLE_RAM_MB" to "64000", "ARXAEL_BUDGET_PCT" to "999")).coreBound)
+    }
+
+    @Test
+    fun `a zero or negative max-concurrent override is ignored, not a wedge`() {
+        // The lone numeric env that used to skip the >0 guard: 0/negative must fall back to the computed bound
+        // (here cores=8), never produce a non-granting Semaphore(0).
+        for (bad in listOf("0", "-1", "-50")) {
+            val c = cfg(mapOf("ARXAEL_CORES" to "8", "ARXAEL_USABLE_RAM_MB" to "64000", "ARXAEL_MAX_CONCURRENT" to bad))
+            assertEquals(8, c.maxConcurrent, "override=$bad ignored -> cores bind")
+            assertEquals("cores", c.bindingConstraint)
+        }
+    }
+
+    @Test
+    fun `reserved high lane is clamped and raises the floor so it can never be starved`() {
+        // reservedHigh is clamped to maxConcurrent-1 (can't reserve every slot); the floor is raised to at least
+        // reservedHigh+1 so the governor can never shrink the bound to <= reservedHigh and starve the high lane.
+        val c = cfg(mapOf("ARXAEL_CORES" to "8", "ARXAEL_USABLE_RAM_MB" to "64000",
+            "ARXAEL_RESERVED_HIGH" to "2", "ARXAEL_CONCURRENCY_FLOOR" to "1"))
+        assertEquals(2, c.reservedHigh)
+        assertEquals(3, c.concurrencyFloor) // raised from the requested 1 to reservedHigh+1
+        // an over-large reservedHigh is clamped to maxConcurrent-1 (never the whole bound)
+        val tiny = cfg(mapOf("ARXAEL_MAX_CONCURRENT" to "2", "ARXAEL_CORES" to "8",
+            "ARXAEL_USABLE_RAM_MB" to "64000", "ARXAEL_RESERVED_HIGH" to "9"))
+        assertEquals(1, tiny.reservedHigh)     // clamped to maxConcurrent(2)-1
+        assertEquals(2, tiny.concurrencyFloor) // reservedHigh+1
     }
 }

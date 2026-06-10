@@ -136,6 +136,21 @@ class MergeService(
         return o.snapshot().toMutableMap().apply { registeredRepo?.let { put("repo", it) } }
     }
 
+    /** Per-PR lifecycle for one [branch] (so an agent can ask "did MY branch land?" instead of racing the
+     *  aggregate counter). [waitMs] > 0 long-polls until the branch reaches a terminal state or the timeout.
+     *  Returns null only if no project is registered; an unknown branch resolves to state "unknown". */
+    fun prStatus(branch: String, waitMs: Long): Map<String, Any?>? {
+        val o = orchestrator ?: return null
+        val out = if (waitMs > 0) o.prStatusWait(branch, waitMs) else o.prStatus(branch)
+        return mapOf(
+            "branch" to branch,
+            "state" to (out?.state ?: "unknown"),
+            "terminal" to (out?.terminal ?: false),
+            "commit" to out?.commit,
+            "reason" to out?.reason,
+        )
+    }
+
     fun isRegistered(): Boolean = orchestrator != null
 
     @Synchronized

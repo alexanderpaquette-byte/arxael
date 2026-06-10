@@ -1,7 +1,36 @@
 # Changelog
 
-All notable changes to arxael-dev-kit. Versions follow [SemVer](https://semver.org/) (pre-1.0: minor =
+All notable changes to Arxael. Versions follow [SemVer](https://semver.org/) (pre-1.0: minor =
 notable change, patch = fix).
+
+## [1.0.3] — 2026-06-10
+
+Reliability hardening + adoption polish (no breaking changes).
+
+**Merge workflow**
+- A submitted branch that isn't in the shared hub repo is now reported with a distinct `missing` state (and a
+  `branchMissing` counter) instead of being mislabeled a textual conflict.
+- New `GET /merge/pr?branch=<b>&wait=<sec>` returns *your* PR's outcome
+  (queued/gating/landed/reverted/bounced/missing/error), with optional long-poll — so an agent no longer
+  races the shared `landed` counter to learn whether its change landed.
+- Culprit attribution and the optimistic fast-path now key off a PR's actual diff, not its declared module:
+  a mis-declared change no longer bounces an innocent PR, and `module` is auto-inferred from the diff when omitted.
+- A transient infrastructure failure during a gate (OOM-killed test worker, a forked JVM dying on a signal,
+  the build daemon disappearing) is treated as inconclusive (retried), not a conclusive failure that reverts
+  a good change.
+- Good changes are no longer false-bounced onto a `main` that was already red.
+
+**Executor / config**
+- `ARXAEL_MAX_CONCURRENT=0` (or negative) no longer wedges the daemon — it falls back to the box-derived bound.
+- The reserved high-priority (merge-gate) lane can no longer be starved when concurrency is driven low.
+- `TimeoutStopSec` added to the systemd unit for a bounded graceful stop.
+
+**Operability / docs**
+- `scripts/arxael up` re-syncs the shared hub from your `main` on reconnect; new `arxael pull` brings landed
+  work back into your checkout.
+- New `docs/FIRST-LAND.md` walkthrough (watch one PR land in ~2 minutes); a README "Is my `main` safe?" panel;
+  clearer guiding error messages; multi-language onboarding clarity.
+- `arxael bench` auto-generates its fixture and surfaces driver errors instead of failing opaquely on a fresh box.
 
 ## [1.0.2] — 2026-06-10
 

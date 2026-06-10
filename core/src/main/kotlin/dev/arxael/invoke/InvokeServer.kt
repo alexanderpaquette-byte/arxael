@@ -56,6 +56,7 @@ class InvokeServer(
             http.createContext("/merge/register") { ex -> safe(ex) { handleMergeRegister(ex, merge) } }
             http.createContext("/merge/submit") { ex -> safe(ex) { handleMergeSubmit(ex, merge) } }
             http.createContext("/merge/status") { ex -> safe(ex) { handleMergeStatus(ex, merge) } }
+            http.createContext("/merge/pr") { ex -> safe(ex) { handleMergePr(ex, merge) } }
         }
         http.start()
         events.emit("server_listening", mapOf("port" to config.port))
@@ -77,15 +78,16 @@ class InvokeServer(
             {
               "service": "arxael-dev-kit",
               "what": "One warm, bounded build/test executor that many trusted local agents share to work on ONE project: branch -> test -> PR -> merge to main, fast and without conflicts.",
-              "ifYouAreAnAgent": "To land your change: (1) POST /invoke to build/test your worktree; (2) when green, POST /merge/submit with your branch; (3) poll GET /merge/status until landed increases (or reverts/bounces if it failed). Tests run on a shared bounded executor, so expect to queue under load (status OVERLOADED = retry later).",
+              "ifYouAreAnAgent": "To land your change: (1) make your branch IN THE SHARED HUB REPO (create your worktree off the hub path that 'arxael up' printed, or 'git push <hub> <branch>') — a branch the hub never received is reported state 'missing'; (2) POST /invoke to build/test your worktree; (3) when green, POST /merge/submit with your branch; (4) GET /merge/pr?branch=<b>&wait=30 to await YOUR outcome (landed/reverted/bounced) instead of racing the shared landed counter. Tests run on a shared bounded executor, so expect to queue under load (status OVERLOADED = retry later).",
               "loopbackOnly": true,
               "endpoints": [
                 {"method":"GET","path":"/health","desc":"liveness, live capacity (concurrencyTarget/cores), recentErrors"},
                 {"method":"GET","path":"/metrics","desc":"Prometheus exposition format (scrape target); see ops/grafana-dashboard.json"},
                 {"method":"POST","path":"/invoke","body":{"adapter":"gradle","worktree":"/abs/path/to/checkout","tasks":["test"],"agentId":"you"},"desc":"run a build/test in a worktree on the warm executor; status SUCCESS|FAILED|OVERLOADED|ERROR|REJECTED (REJECTED=args not on allowlist, HTTP 422)"},
                 {"method":"POST","path":"/warmup","body":{"adapter":"gradle","worktree":"/abs/path/to/checkout"},"desc":"optional: pre-spawn the build daemon so your first build is warm"},
-                {"method":"POST","path":"/merge/submit","body":{"branch":"my-feature","module":":app","agentId":"you"},"desc":"submit a branch-tested PR to land on main; module is its Gradle path (optional)"},
-                {"method":"GET","path":"/merge/status","desc":"merge-queue stats: landed, reverts, bouncedSemantic/Textual, errors, inFlightGates"},
+                {"method":"POST","path":"/merge/submit","body":{"branch":"my-feature","module":":app","agentId":"you"},"desc":"submit a branch-tested PR to land on main; the branch must exist in the hub repo; module is its Gradle path (optional — auto-inferred from the diff when omitted)"},
+                {"method":"GET","path":"/merge/pr?branch=my-feature&wait=30","desc":"YOUR PR's outcome: state queued|gating|landed|reverted|bounced|missing|error (+terminal,commit,reason). wait=<sec> long-polls until terminal. The reliable 'did it land?' check."},
+                {"method":"GET","path":"/merge/status","desc":"merge-queue stats: landed, reverts, bouncedSemantic/Textual, branchMissing, errors, inFlightGates, queueDepth"},
                 {"method":"POST","path":"/merge/register","body":{"repo":"/abs/path/to/bare.git"},"desc":"operator-only: register the project; usually done for you by 'scripts/arxael up'"}
               ],
               "docs": "AGENTS.md (start here), docs/SETUP.md, docs/ARCHITECTURE.md"
@@ -175,7 +177,7 @@ class InvokeServer(
         return if (merge.submit(spec.branch, spec.module, spec.agentId)) {
             respond(ex, 200, """{"ok":true,"queued":${jsonStr(spec.branch)}}""")
         } else {
-            respond(ex, 409, """{"ok":false,"error":"no project registered; POST /merge/register first"}""")
+            respond(ex, 409, """{"ok":false,"error":"no project registered — run 'scripts/arxael up' inside the project (or POST /merge/register)"}""")
         }
     }
 
@@ -184,6 +186,26 @@ class InvokeServer(
         val s = merge.status() ?: return respond(ex, 200, """{"ok":true,"registered":false}""")
         val snap = s.toMutableMap(); snap["ok"] = true; snap["registered"] = true
         respond(ex, 200, json.encodeToString(mapToJson(snap)))
+    }
+
+    /**
+     * Per-PR status (GET /merge/pr?branch=<b>[&wait=<seconds>]). Lets an agent ask "did MY branch land?"
+     * directly — instead of racing the aggregate `landed` counter, which with N concurrent agents can't tell
+     * whose PR moved it. `wait` long-polls (capped 60s) until the branch reaches a terminal state.
+     */
+    private fun handleMergePr(ex: HttpExchange, merge: MergeService) {
+        if (ex.requestMethod != "GET") return respond(ex, 405, """{"error":"GET only"}""")
+        val params = (ex.requestURI.rawQuery ?: "").split("&").mapNotNull { p ->
+            val i = p.indexOf('='); if (i <= 0) null else
+                java.net.URLDecoder.decode(p.substring(0, i), Charsets.UTF_8) to java.net.URLDecoder.decode(p.substring(i + 1), Charsets.UTF_8)
+        }.toMap()
+        val branch = params["branch"]?.takeIf { it.isNotBlank() && it.length <= 255 }
+            ?: return respond(ex, 400, """{"ok":false,"error":"missing or invalid ?branch="}""")
+        val waitMs = ((params["wait"]?.toLongOrNull() ?: 0L).coerceIn(0, 60)) * 1000
+        val pr = merge.prStatus(branch, waitMs)
+            ?: return respond(ex, 200, """{"ok":true,"registered":false}""")
+        val out = pr.toMutableMap(); out["ok"] = true
+        respond(ex, 200, json.encodeToString(mapToJson(out)))
     }
 
     /**

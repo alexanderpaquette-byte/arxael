@@ -65,9 +65,33 @@ class ExecutorMergeGate(
          */
         fun toGateResult(status: String, output: String): GateResult = when (status) {
             InvokeStatus.SUCCESS.name -> GateResult(green = true)
-            InvokeStatus.FAILED.name ->
-                GateResult(green = false, failedModules = CulpritAttribution.failedModules(output), conclusive = true)
+            InvokeStatus.FAILED.name -> {
+                val failed = CulpritAttribution.failedModules(output)
+                // A genuine compile/test failure prints a parseable "> Task :x FAILED" / "Execution failed for
+                // task". If NONE is attributable AND the output bears infra-fault signatures (an OOM-killed test
+                // worker, a forked JVM that died on a signal, the daemon disappearing), the "red" is most likely
+                // a TRANSIENT resource event under load — not a real failure. Treat it as INCONCLUSIVE (retry,
+                // bounded) rather than a conclusive red that reverts/bounces a good PR. A genuinely-broken PR
+                // still fails closed once the retries exhaust.
+                if (failed.isEmpty() && looksLikeInfraFault(output)) GateResult(green = false, conclusive = false)
+                else GateResult(green = false, failedModules = failed, conclusive = true)
+            }
             else -> GateResult(green = false, conclusive = false)
         }
+
+        /** Markers that a FAILED build died from a transient INFRA/resource fault (process/JVM death) rather
+         *  than a real compile/test failure. Checked only when no failed task is attributable. */
+        private val INFRA_FAULT_MARKERS = listOf(
+            "OutOfMemoryError",                          // JVM heap / Metaspace exhaustion (worker or daemon)
+            "finished with non-zero exit value 137",     // SIGKILL — the OOM-killer reaped a forked test JVM
+            "finished with non-zero exit value 143",     // SIGTERM
+            "finished with non-zero exit value 139",     // SIGSEGV — a native crash, not a test failure
+            "killed by signal",                          // ProcExec's signal message (exec/command adapters)
+            "Gradle build daemon disappeared",           // the build daemon crashed mid-build
+            "Could not receive a message from the daemon",
+        )
+
+        /** True iff [output] looks like a transient infra fault (see [INFRA_FAULT_MARKERS]). Pure/testable. */
+        fun looksLikeInfraFault(output: String): Boolean = INFRA_FAULT_MARKERS.any { output.contains(it) }
     }
 }

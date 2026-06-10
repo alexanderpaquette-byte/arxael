@@ -232,4 +232,19 @@ class WarmExecutorConcurrencyTest {
             assertTrue(Files.exists(fresh), "a recently-touched dir (possible in-flight create) must NOT be GC'd")
         } finally { ex.shutdown() }
     }
+
+    @Test
+    fun `a pinned merge-gate server is exempt from LRU eviction under an agent flood`() {
+        // warmServers=1: a flood of agent worktrees would normally evict everything but the freshest. The
+        // merge-gate worktree (agentId="merge-gate") is PINNED, so it stays warm -> landings don't go cold.
+        val cfg = cfg(maxConcurrent = 4, reservedHigh = 1, acquireTimeoutMs = 1000).copy(warmServers = 1)
+        val ex = WarmExecutor(cfg, registry, events)
+        try {
+            ex.submit(InvokeSpec(adapter = "noop", worktree = tmp.resolve("gate").toString(),
+                agentId = "merge-gate", priority = "high"))
+            repeat(5) { ex.submit(spec(tmp.resolve("agent$it").toString())) } // would evict an unpinned gate
+            assertEquals(1, ex.servers().count { it.pinned }, "the pinned merge-gate server must survive the flood")
+            assertTrue(ex.servers().any { it.pinned }, "gate server still warm")
+        } finally { ex.shutdown() }
+    }
 }

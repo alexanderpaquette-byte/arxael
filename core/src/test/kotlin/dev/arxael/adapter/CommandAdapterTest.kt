@@ -39,6 +39,18 @@ class CommandAdapterTest {
     }
 
     @Test
+    fun `ARXAEL CMD override parses a JSON array (paths with spaces) or a whitespace string`() {
+        // JSON-array form preserves a path containing spaces as one argv element
+        assertEquals(listOf("/opt/My Tools/mvn", "-q", "test"),
+            CommandAdapter.parseCmd("""["/opt/My Tools/mvn","-q","test"]"""))
+        // simple whitespace form still works
+        assertEquals(listOf("mvn", "-q", "test"), CommandAdapter.parseCmd("mvn -q test"))
+        assertEquals(listOf("mvn"), CommandAdapter.parseCmd("mvn"))
+        // malformed JSON falls back to whitespace-split, never throws
+        assertEquals(listOf("[oops"), CommandAdapter.parseCmd("[oops"))
+    }
+
+    @Test
     fun `caller-supplied tasks override the default command`() {
         // default would succeed ("true"), but the caller forces a failing command -> override wins
         val adapter = CommandAdapter("demo", listOf("true"))

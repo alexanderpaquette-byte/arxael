@@ -24,6 +24,14 @@ class MergeArgPolicyTest {
         assertTrue(rejected(MergeArgPolicy.check("-X", null, null)))
     }
 
+    @Test fun `path-traversal-shaped refs (dotdot or leading slash) are rejected`() {
+        assertTrue(rejected(MergeArgPolicy.check("../../etc", null, null)))
+        assertTrue(rejected(MergeArgPolicy.check("/etc/passwd", null, null)))
+        assertTrue(rejected(MergeArgPolicy.check("..", null, null)))
+        assertTrue(rejected(MergeArgPolicy.check("ok", "../x", null)))
+        assertTrue(rejected(MergeArgPolicy.check("ok", "/abs", null)))
+    }
+
     @Test fun `a tab or newline in any field is rejected (journal record forgery)`() {
         assertTrue(rejected(MergeArgPolicy.check("feat\tDONE\tother", null, null)))
         assertTrue(rejected(MergeArgPolicy.check("feat\nDONE\tother", null, null)))

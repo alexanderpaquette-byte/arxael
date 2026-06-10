@@ -52,7 +52,9 @@ object MetricsRenderer {
         else -> null
     }
 
-    /** camelCase -> snake_case (Prometheus naming convention). */
+    /** camelCase -> snake_case, then SANITIZE to the Prometheus name charset [a-zA-Z0-9_:]. Snapshot keys are
+     *  code-controlled today, but a stray key with a space/dash/dot — or, worse, a newline — would otherwise
+     *  emit a malformed metric line (or inject extra exposition lines) and break the whole scrape parse. */
     private fun snake(s: String): String =
-        s.replace(Regex("([a-z0-9])([A-Z])"), "$1_$2").lowercase()
+        s.replace(Regex("([a-z0-9])([A-Z])"), "$1_$2").lowercase().replace(Regex("[^a-z0-9_:]"), "_")
 }

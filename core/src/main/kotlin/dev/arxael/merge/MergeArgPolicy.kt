@@ -25,9 +25,11 @@ object MergeArgPolicy {
     fun check(branch: String, module: String?, agentId: String?): Result {
         if (branch.isBlank()) return Rejected("branch is required")
         if (branch.startsWith("-")) return Rejected("branch may not start with '-' (git would read it as an option)")
+        if (branch.startsWith("/") || branch.contains("..")) return Rejected("branch is not a valid git ref (no leading '/' or '..')")
         if (!BRANCH.matches(branch)) return Rejected("branch has illegal characters (allowed: letters, digits, . _ / + -)")
         if (module != null) {
             if (module.startsWith("-")) return Rejected("module may not start with '-'")
+            if (module.startsWith("/") || module.contains("..")) return Rejected("module path is invalid (no leading '/' or '..')")
             if (!MODULE.matches(module)) return Rejected("module has illegal characters (allowed: letters, digits, . _ : / + -)")
         }
         if (agentId != null && agentId.isNotEmpty() && !AGENT.matches(agentId)) {

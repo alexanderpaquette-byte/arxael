@@ -14,10 +14,12 @@ import java.nio.file.Path
  * --init-script) or reach outside its worktree. Anything not explicitly recognised is rejected.
  */
 object ArgAllowlist {
+    // Bounded lengths: a multi-MB token is never a legitimate task/value/prop, and forwarding one wastes
+    // memory/argv space. Caps are generous (real tasks/filters are short) but finite — fail closed on absurd input.
     private val ADAPTER = Regex("^[a-z][a-z0-9_-]{0,31}$")
-    private val TASK = Regex("^[A-Za-z0-9_.:\\-]+$")
-    private val VALUE = Regex("^[A-Za-z0-9_.:*$#/\\-]+$")
-    private val PROP = Regex("^-P[A-Za-z0-9_.]+=[^\\s]*$")
+    private val TASK = Regex("^[A-Za-z0-9_.:\\-]{1,256}$")
+    private val VALUE = Regex("^[A-Za-z0-9_.:*$#/\\-]{1,512}$")
+    private val PROP = Regex("^-P[A-Za-z0-9_.]{1,256}=[^\\s]{0,512}$")
     private val NOOP_KV = Regex("^[A-Za-z][A-Za-z0-9]*=[A-Za-z0-9_.\\-]*$") // e.g. sleepMs=50
 
     /** Safe standalone flags. Note: cache/parallelism/isolation flags are INJECTED, never accepted. */

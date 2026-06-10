@@ -2,6 +2,7 @@ package dev.arxael.adapter
 
 import dev.arxael.config.BoxConfig
 import dev.arxael.protocol.InvokeSpec
+import kotlinx.serialization.json.Json
 import java.nio.file.Path
 
 /**
@@ -45,9 +46,10 @@ class CommandAdapter(
          * ecosystem is one line here (or the operator can wire a custom [CommandAdapter]); the executor, merge
          * orchestration, and /invoke surface are unchanged — the SPI is the only contract.
          *
-         * Each default command is overridable per deployment via `ARXAEL_<NAME>_CMD` (space-separated), so a
-         * real project can scope its gate properly without code changes — e.g.
-         * `ARXAEL_MAVEN_CMD="mvn -q -pl core -am test"` to test one module of a multi-module Maven build.
+         * Each default command is overridable per deployment via `ARXAEL_<NAME>_CMD`, so a real project can
+         * scope its gate properly without code changes — e.g. `ARXAEL_MAVEN_CMD="mvn -q -pl core -am test"`.
+         * Two forms: a simple space-separated string, OR a JSON array `["/opt/My Tools/mvn","-q","test"]` when
+         * a path/arg contains spaces (the space-split form would mangle it into a broken argv).
          */
         fun languageDefaults(getenv: (String) -> String? = { System.getenv(it) }): List<CommandAdapter> = listOf(
             cmd("pytest", listOf("pytest", "-q"), getenv),         // Python
@@ -63,8 +65,16 @@ class CommandAdapter(
         /** Build an adapter whose default command is the env override `ARXAEL_<NAME>_CMD` if set, else [fallback]. */
         internal fun cmd(name: String, fallback: List<String>, getenv: (String) -> String?): CommandAdapter {
             val override = getenv("ARXAEL_${name.uppercase()}_CMD")?.trim()?.takeIf { it.isNotEmpty() }
-            return CommandAdapter(name, override?.split(Regex("\\s+")) ?: fallback)
+            return CommandAdapter(name, override?.let { parseCmd(it) } ?: fallback)
         }
+
+        /** Parse an `ARXAEL_<NAME>_CMD` override: a JSON array `["/path with spaces/bin","arg"]` for an exact
+         *  argv (handles spaces), else whitespace-split for the simple `mvn -q test` form. Never throws —
+         *  malformed JSON falls back to the split. Argv is run directly (ProcessBuilder, no shell), so a token
+         *  containing shell metacharacters is an inert literal arg, not an injection vector. */
+        internal fun parseCmd(s: String): List<String> =
+            runCatching { Json.decodeFromString<List<String>>(s) }.getOrNull()?.takeIf { it.isNotEmpty() }
+                ?: s.split(Regex("\\s+"))
 
         /**
          * Per-worktree toolchain-home env for a CommandAdapter. Currently a NO-OP (returns empty) — kept as

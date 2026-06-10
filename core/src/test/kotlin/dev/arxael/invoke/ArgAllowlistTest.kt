@@ -33,6 +33,13 @@ class ArgAllowlistTest {
         assertTrue(ok(spec(args = listOf("--quiet", "--rerun-tasks", "-Pfoo=bar"))))
     }
 
+    @Test fun `an absurdly long token is rejected (bounded length, fail closed)`() {
+        val huge = "x".repeat(5000)
+        assertTrue(!ok(spec(args = listOf("--tests", huge))), "5KB --tests value must be rejected")
+        assertTrue(!ok(spec(args = listOf("-Pfoo=$huge"))), "5KB -P value must be rejected")
+        assertTrue(!ok(spec(adapter = "pytest", tasks = listOf(huge))), "5KB task token must be rejected")
+    }
+
     @Test fun `paired value flag passes with a good value`() {
         assertTrue(ok(spec(args = listOf("--tests", "dev.arxael.C1Test"))))
     }

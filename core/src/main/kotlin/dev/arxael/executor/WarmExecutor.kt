@@ -78,7 +78,9 @@ class WarmExecutor(
     fun inFlight(): Int = inFlight.get()
 
     /** Threads currently blocked waiting for a permit (demand signal for the adaptive governor). */
-    fun waitingCount(): Int = permits.queueLength + normalPermits.queueLength
+    // maxOf, not sum: a normal caller queues on normalPermits THEN on permits (sequentially, one at a time), so
+    // summing the two queue lengths double-counts demand and biases the governor to grow (raising pressure).
+    fun waitingCount(): Int = maxOf(permits.queueLength, normalPermits.queueLength)
 
     /** Current adaptive concurrency target. */
     fun concurrencyTarget(): Int = permits.configuredPermits()
@@ -211,7 +213,9 @@ class WarmExecutor(
             val id = "ws-${serverSeq.incrementAndGet()}-${spec.adapter}"
             events.emit("server_open", mapOf("key" to key, "server" to id, "outputBase" to outputBase.toString()))
             val session = adapter.open(Path.of(canonical(spec.worktree)), outputBase, config)
-            WorktreeServer(id, key, session)
+            // Pin merge-gate worktrees: their servers must stay warm under agent churn (a cold gate slows every
+            // landing), and pinning also keeps their on-disk cache out of the eviction GC's reach.
+            WorktreeServer(id, key, session, pinned = spec.agentId == "merge-gate")
         }
         // LRU eviction runs OUTSIDE computeIfAbsent (modifying the map inside its own mapping function violates
         // ConcurrentHashMap's contract). Called on EVERY lookup, not just cache MISSES: over-cap is a function of
@@ -237,7 +241,7 @@ class WarmExecutor(
         val victims = ArrayList<WorktreeServer>()
         synchronized(servers) {
             while (servers.size > config.warmServers) {
-                val victim = servers.values.filter { !it.busy }.minByOrNull { it.lastUsed() } ?: break
+                val victim = servers.values.filter { !it.busy && !it.pinned }.minByOrNull { it.lastUsed() } ?: break
                 servers.remove(victim.key) // off the map first: no NEW lookup routes to it
                 events.emit("server_evict", mapOf("key" to victim.key, "server" to victim.id))
                 victims.add(victim)

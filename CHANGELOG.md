@@ -3,6 +3,30 @@
 All notable changes to arxael-dev-kit. Versions follow [SemVer](https://semver.org/) (pre-1.0: minor =
 notable change, patch = fix).
 
+## [0.7.0] — 2026-06-10
+
+Third adversarial review wave (three reviewers: validator/parser fuzzing, HTTP/adapter robustness, and
+whole-system integration races). Each finding was verified against the code; the over-stated ones were
+refuted (a gate-cache "clobber" the TTL + create-mtime guard already prevents; an "unsound routing" probe
+claim — the probe is fail-safe). 8 fixes, each with a test.
+
+### Robustness / fail-closed config
+- `BoxConfig` no longer crashes at startup on a non-finite `ARXAEL_AGENTS_PER_CORE` (NaN/Infinity threw in
+  `roundToInt`); `memBound` is clamped so a huge-RAM/tiny-footprint box can't saturate it to `Int.MAX` and
+  disable the OOM guard; negative/zero numeric env vars fall back to sane defaults instead of a degenerate box.
+- `/invoke` arg tokens are length-bounded; `/merge/submit` also rejects `..` and leading-`/` refs.
+- `MetricsRenderer` sanitizes metric names to the Prometheus charset (a stray key can't emit a malformed or
+  injected exposition line).
+
+### Stability
+- HTTP request read-timeout (`maxReqTime`) bounds slow/partial bodies so a stalled caller can't park a worker
+  and starve `/health` (response time deliberately unbounded — builds run in the handler and take minutes).
+- Merge-gate worktree servers are pinned, so an agent flood can't LRU-evict them and leave landings cold.
+- The adaptive demand signal no longer double-counts the two permit lanes (less needless resize churn).
+
+### Ergonomics
+- `ARXAEL_<NAME>_CMD` accepts a JSON array for commands whose path or args contain spaces.
+
 ## [0.6.0] — 2026-06-10
 
 Hardening release. 15 bugs found and fixed across two adversarial review waves (nine independent reviewers

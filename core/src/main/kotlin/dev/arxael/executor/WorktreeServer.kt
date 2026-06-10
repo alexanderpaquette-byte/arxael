@@ -18,6 +18,9 @@ class WorktreeServer(
     val id: String,
     val key: String,
     private val session: AdapterSession,
+    /** Pinned servers are exempt from capacity (LRU) eviction — used for merge-gate worktrees so an agent flood
+     *  can't evict them and leave landings paying a cold re-warm. They are still fault/health-recovered. */
+    val pinned: Boolean = false,
 ) {
     private val lock = ReentrantLock()
     private val lastUsedNanos = AtomicLong(System.nanoTime())

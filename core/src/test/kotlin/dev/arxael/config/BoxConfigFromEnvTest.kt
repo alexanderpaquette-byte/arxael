@@ -14,6 +14,29 @@ class BoxConfigFromEnvTest {
     private fun cfg(env: Map<String, String>) = BoxConfig.fromEnv { env[it] }
 
     @Test
+    fun `hostile or degenerate env values never crash fromEnv and yield bounds in range`() {
+        // a bad ARXAEL_* (typo, hostile, stale) must fail closed to a sane box, never throw at startup nor
+        // saturate the OOM guard. ARXAEL_USABLE_RAM_MB is pinned so the case is deterministic (no /proc).
+        val base = mapOf("ARXAEL_USABLE_RAM_MB" to "64000")
+        val hostile = listOf(
+            mapOf("ARXAEL_AGENTS_PER_CORE" to "NaN"),
+            mapOf("ARXAEL_AGENTS_PER_CORE" to "Infinity"),
+            mapOf("ARXAEL_CORES" to "-5"),
+            mapOf("ARXAEL_CORES" to "0"),
+            mapOf("ARXAEL_CORES" to "notanumber"),
+            mapOf("ARXAEL_USABLE_RAM_MB" to "3000000000", "ARXAEL_PER_BUILD_MB" to "1"),
+            mapOf("ARXAEL_RAM_HEADROOM_MB" to "999999999"),
+            mapOf("ARXAEL_PER_BUILD_MB" to "0"),
+            mapOf("ARXAEL_PER_BUILD_MB" to "-100"),
+        )
+        for (extra in hostile) {
+            val c = BoxConfig.fromEnv { (base + extra)[it] } // must not throw
+            assertTrue(c.maxConcurrent in 1..100_000, "maxConcurrent in range for $extra, got ${c.maxConcurrent}")
+            assertTrue(c.coreBound >= 1 && c.memBound >= 1, "bounds >= 1 for $extra")
+        }
+    }
+
+    @Test
     fun `defaults are sensible when only cores + RAM are pinned`() {
         val c = cfg(mapOf("ARXAEL_CORES" to "8", "ARXAEL_USABLE_RAM_MB" to "16000"))
         assertEquals(8, c.cores)

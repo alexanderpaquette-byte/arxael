@@ -7,6 +7,21 @@ import kotlin.test.assertTrue
 
 class MetricsRendererTest {
     @Test
+    fun `keys with invalid Prometheus characters are sanitized (no malformed or injected lines)`() {
+        val out = MetricsRenderer.render(
+            listOf("executor" to mapOf("weird key" to 1, "has-dash" to 2, "dot.path" to 3, "inj\nected" to 4)),
+        )
+        val nameRe = Regex("^[a-zA-Z_:][a-zA-Z0-9_:]*$")
+        for (line in out.lineSequence()) {
+            if (line.isEmpty() || line.startsWith("#")) continue
+            val name = line.substringBefore(' ')
+            assertTrue(nameRe.matches(name), "emitted an invalid Prometheus metric name: '$name'")
+        }
+        assertContains(out, "arxael_executor_weird_key")
+        assertContains(out, "arxael_executor_inj_ected 4") // the newline became '_', not an injected exposition line
+    }
+
+    @Test
     fun `always emits arxael_up gauge`() {
         val out = MetricsRenderer.render(emptyList(), up = true)
         assertContains(out, "# TYPE arxael_up gauge")

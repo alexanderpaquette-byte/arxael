@@ -2,6 +2,7 @@ package dev.arxael.config
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 /**
  * The load-bearing bound logic: maxConcurrent = max(1, min(coreBound, memBound)),
@@ -9,6 +10,33 @@ import kotlin.test.assertEquals
  * either oversubscribes RAM (OOM-wedge) or starves the box.
  */
 class BoxConfigBoundsTest {
+
+    @Test
+    fun `a non-finite or non-positive agentsPerCore does not crash and yields a sane bound`() {
+        // roundToInt() THROWS on NaN ("Cannot round NaN value"); computeBounds must coerce, not crash startup.
+        for (apc in listOf(Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, 0.0, -3.0)) {
+            val b = BoxConfig.computeBounds(cores = 8, agentsPerCore = apc,
+                usableRamMb = 64_000, ramHeadroomMb = 4_000, perBuildFootprintMb = 1536, override = null)
+            assertTrue(b.coreBound in 1..8, "coreBound sane for apc=$apc, got ${b.coreBound}")
+            assertTrue(b.maxConcurrent >= 1)
+        }
+    }
+
+    @Test
+    fun `memBound is clamped, never saturated to Int MAX, on huge RAM with a tiny footprint`() {
+        val b = BoxConfig.computeBounds(cores = 8, agentsPerCore = 1.0,
+            usableRamMb = 3_000_000_000, ramHeadroomMb = 0, perBuildFootprintMb = 1, override = null)
+        assertTrue(b.memBound in 1..100_000, "memBound must be clamped, was ${b.memBound}")
+        assertEquals(8, b.maxConcurrent, "coreBound binds; memBound must not become Int.MAX and vanish from the min")
+    }
+
+    @Test
+    fun `headroom exceeding RAM yields the most conservative memBound of 1 (not negative)`() {
+        val b = BoxConfig.computeBounds(cores = 8, agentsPerCore = 1.0,
+            usableRamMb = 4_000, ramHeadroomMb = 8_000, perBuildFootprintMb = 1536, override = null)
+        assertEquals(1, b.memBound)
+        assertEquals(1, b.maxConcurrent)
+    }
 
     @Test
     fun `cores bind on a RAM-rich box`() {

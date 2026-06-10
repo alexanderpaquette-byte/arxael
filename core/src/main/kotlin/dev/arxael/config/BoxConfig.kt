@@ -136,6 +136,10 @@ data class BoxConfig(
     )
 
     companion object {
+        /** Upper clamp for memBound: prevents a huge-RAM/tiny-footprint box from saturating it to Int.MAX
+         *  (which would silently disable the OOM guard). Far above any real box's true concurrency. */
+        const val MEM_BOUND_CAP = 100_000L
+
         /**
          * Pure bound resolution — extracted so it is unit/mutation testable without env.
          * `maxConcurrent = max(1, min(coreBound, memBound))`, with an explicit override winning.
@@ -152,12 +156,21 @@ data class BoxConfig(
             // budgetPct = how much of the machine to use (100 = the whole box, the default; 60 = ~60% of
             // cores AND of build-available RAM). One simple dial that scales BOTH bounds proportionally.
             val pct = budgetPct.coerceIn(1, 100) / 100.0
-            val coreBound = max(1, (cores * agentsPerCore * pct).roundToInt())
+            // Defend the arithmetic against degenerate inputs (computeBounds is also called directly by tests /
+            // benches): a non-finite or non-positive agentsPerCore makes roundToInt() THROW ("Cannot round NaN
+            // value") and crash startup — coerce to the 1.0 default.
+            val apc = if (agentsPerCore.isFinite() && agentsPerCore > 0) agentsPerCore else 1.0
+            val coreBound = max(1, (cores.coerceAtLeast(0) * apc * pct).roundToInt())
             // Guard the divisor: perBuildFootprintMb=0 (bad ARXAEL_PER_BUILD_MB / stale footprint file) would
-            // make this Infinity -> toInt()=Int.MAX_VALUE -> memBound unbounded, defeating the OOM guard the
-            // whole bound exists for. Floor at 1 MB so memBound stays finite and conservative.
+            // make this Infinity -> memBound unbounded, defeating the OOM guard the whole bound exists for.
+            // Floor at 1 MB so memBound stays finite and conservative.
             val perBuild = maxOf(1L, perBuildFootprintMb)
-            val memBound = max(1, (((usableRamMb - ramHeadroomMb) * pct) / perBuild).toInt())
+            // Compute in Long and CLAMP: a huge RAM / tiny footprint makes the quotient exceed 2^31, and
+            // (Double).toInt() SATURATES to Int.MAX_VALUE -> an effectively unbounded memBound (the exact state
+            // the guard prevents). Cap at a sane ceiling; coreBound is the real binding constraint on any actual
+            // box anyway. A negative numerator (headroom > RAM) floors to 0 -> memBound 1 (most conservative).
+            val memBound = (((usableRamMb - ramHeadroomMb).coerceAtLeast(0) * pct) / perBuild)
+                .toLong().coerceIn(1L, MEM_BOUND_CAP).toInt()
             val maxConcurrent = override ?: max(1, min(coreBound, memBound))
             val binding = when {
                 override != null -> "override"
@@ -184,15 +197,18 @@ data class BoxConfig(
          *  environment variables (default reads the process environment). */
         fun fromEnv(getenv: (String) -> String? = { System.getenv(it) }): BoxConfig {
             fun env(k: String): String? = getenv(k)?.takeIf { it.isNotBlank() }
-            val cores = env("ARXAEL_CORES")?.toIntOrNull() ?: Runtime.getRuntime().availableProcessors()
-            val agentsPerCore = env("ARXAEL_AGENTS_PER_CORE")?.toDoubleOrNull() ?: 1.0
-            val warmServers = env("ARXAEL_WARM_SERVERS")?.toIntOrNull() ?: cores
+            // takeIf{>0}: a negative/zero (typo or hostile) numeric env must not silently produce a degenerate
+            // box — fall back to the sane default instead. agentsPerCore additionally rejects NaN/Infinity
+            // (toDoubleOrNull admits them) so the bound arithmetic can't crash or saturate.
+            val cores = env("ARXAEL_CORES")?.toIntOrNull()?.takeIf { it > 0 } ?: Runtime.getRuntime().availableProcessors()
+            val agentsPerCore = env("ARXAEL_AGENTS_PER_CORE")?.toDoubleOrNull()?.takeIf { it.isFinite() && it > 0 } ?: 1.0
+            val warmServers = env("ARXAEL_WARM_SERVERS")?.toIntOrNull()?.takeIf { it > 0 } ?: cores
 
             val stateDir = Paths.get(env("ARXAEL_STATE_DIR") ?: "${System.getProperty("user.home")}/.arxael")
 
-            val usableRamMb = env("ARXAEL_USABLE_RAM_MB")?.toLongOrNull() ?: detectTotalRamMb()
+            val usableRamMb = env("ARXAEL_USABLE_RAM_MB")?.toLongOrNull()?.takeIf { it > 0 } ?: detectTotalRamMb()
             // Headroom: keep the larger of 2 GB or 10% of RAM out of builds' reach (OS + daemon JVM).
-            val ramHeadroomMb = env("ARXAEL_RAM_HEADROOM_MB")?.toLongOrNull() ?: max(2048L, usableRamMb / 10)
+            val ramHeadroomMb = env("ARXAEL_RAM_HEADROOM_MB")?.toLongOrNull()?.takeIf { it >= 0 } ?: max(2048L, usableRamMb / 10)
             // Per-build footprint: explicit env wins; else the footprint the governor LEARNED on a previous
             // run (so the startup bound is calibrated by history as the project grows); else the 1.5 GB seed.
             val perBuildFootprintMb = maxOf(1L, env("ARXAEL_PER_BUILD_MB")?.toLongOrNull()

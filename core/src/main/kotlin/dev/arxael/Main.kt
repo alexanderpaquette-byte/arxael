@@ -21,6 +21,13 @@ import java.util.concurrent.CountDownLatch
  * its own build daemon in its own sandbox.
  */
 fun main() {
+    // Bound slow/partial REQUEST bodies (slow-loris): the JDK HttpServer reaps an exchange whose request isn't
+    // fully received within maxReqTime seconds, freeing the worker thread — else a stalled caller parks a
+    // fixed-pool worker indefinitely and enough of them starve /health, /metrics, /invoke. We deliberately do
+    // NOT set maxRspTime: a build runs inside the /invoke handler and can legitimately take minutes, and that
+    // bound would abort long builds. maxReqTime only covers request RECEIPT (tiny JSON, ms on loopback). Read
+    // once when the HttpServer classes initialize, so it must be set before anything creates a server.
+    System.setProperty("sun.net.httpserver.maxReqTime", "60")
     val config = BoxConfig.fromEnv()
     Files.createDirectories(config.stateDir)
     val events = EventLog(config.stateDir.resolve("events.jsonl"))

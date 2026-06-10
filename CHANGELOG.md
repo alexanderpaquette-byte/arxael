@@ -3,6 +3,16 @@
 All notable changes to Arxael. Versions follow [SemVer](https://semver.org/) (pre-1.0: minor =
 notable change, patch = fix).
 
+## [1.1.1] — 2026-06-10
+
+Fix (no breaking changes).
+
+- **`arxael up` now guarantees the port file is readable the instant it returns.** An agent scripting
+  `arxael up && cat ~/.arxael/port` could read an empty value (then probe `127.0.0.1:` → port 80, a false
+  "API serves nothing" alarm while the daemon is healthy): the write was a non-atomic truncate-write that was
+  never flushed — a sub-millisecond window on native Linux, much wider on WSL1's syscall shim. The port file is
+  now written atomically (temp + rename) and fsynced before `up` returns.
+
 ## [1.1.0] — 2026-06-10
 
 `npm install -g arxael` — one-command install, and the merge gate now auto-detects your language (no breaking

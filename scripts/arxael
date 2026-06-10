@@ -117,7 +117,7 @@ cmd_up() {
     local BUDGET_ENV; choose_budget "$@"
     # pick a free port so it never clashes with anything else you are running
     local p=8723; while curl -fsS -m1 "http://127.0.0.1:$p/health" >/dev/null 2>&1; do p=$((p+1)); done
-    echo "$p" > "$PORT_FILE"
+    printf '%s\n' "$p" > "$PORT_FILE.tmp" && mv -f "$PORT_FILE.tmp" "$PORT_FILE"  # atomic: a reader never catches it mid-truncate
     local gate; gate="$(detect_gate_adapter)"
     [ -n "$gate" ] && [ "$gate" != gradle ] && say "  Test gate: ${B}$gate${D} (auto-detected; override with ARXAEL_MERGE_GATE_ADAPTER)."
     say "Starting your helper…"
@@ -126,6 +126,10 @@ cmd_up() {
     echo $! > "$PID_FILE"
     for _ in $(seq 1 50); do api /health 1 >/dev/null 2>&1 && break; sleep 0.2; done
     if ! api /health 2 >/dev/null 2>&1; then say "$ERR It did not start. Last lines of the log:"; tail -5 "$LOG_FILE"; exit 1; fi
+    # `arxael up` returning is a hard guarantee the port file is durably readable from another process — agents
+    # script `arxael up && cat ~/.arxael/port`, and on some filesystems (notably WSL1) a write isn't flushed
+    # cross-process-visible immediately, so the read can come back empty. Flush it before we return.
+    sync "$PORT_FILE" 2>/dev/null || sync 2>/dev/null || true
     say "$OK It's on (port $(port))."
   fi
 

@@ -1,0 +1,273 @@
+#!/usr/bin/env bash
+# arxael — the friendly front door. No jargon, no JSON, no daemons to think about.
+#
+# For someone who just started coding: this runs a little always-on helper on your computer that lets a
+# bunch of AI coding agents work on your project at the same time without stepping on each other. You only
+# ever need a few words:
+#
+#   arxael up        # turn it on (and connect the project you are standing in)
+#   arxael status    # is it working? any problems?
+#   arxael logs      # what just happened (in plain words)
+#   arxael stop      # turn it off (cleans up after itself)
+#
+# Everything else — ports, processes, build daemons, work folders — is handled for you and cleaned up for you.
+set -u
+
+# ---------------------------------------------------------------- where things live (auto, no setup)
+HOME_DIR="${HOME:-/home/ubuntu}"
+STATE="${ARXAEL_STATE_DIR:-$HOME_DIR/.arxael}"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"     # the arxael-dev-kit checkout
+PORT_FILE="$STATE/port"; PID_FILE="$STATE/pid"; LOG_FILE="$STATE/daemon.log"
+mkdir -p "$STATE"
+
+# colours/symbols (fall back to plain text if not a terminal)
+if [ -t 1 ]; then OK=$'\e[32m✓\e[0m'; WARN=$'\e[33m⚠\e[0m'; ERR=$'\e[31m✗\e[0m'; B=$'\e[1m'; D=$'\e[0m'; else OK="OK"; WARN="!"; ERR="x"; B=""; D=""; fi
+say() { printf '%s\n' "$*"; }
+
+# ---------------------------------------------------------------- helpers (hidden from the user)
+find_gradle_home() {
+  for g in "${ARXAEL_GRADLE_HOME:-}" /opt/gradle/gradle-* ; do
+    [ -x "$g/bin/gradle" ] && { echo "$g"; return; }
+  done
+  command -v gradle >/dev/null 2>&1 && dirname "$(dirname "$(readlink -f "$(command -v gradle)")")"
+}
+core_bin() { echo "$HERE/core/build/install/core/bin/core"; }
+port() { cat "$PORT_FILE" 2>/dev/null || echo 8723; }
+is_running() { local p; p="$(cat "$PID_FILE" 2>/dev/null)"; [ -n "$p" ] && kill -0 "$p" 2>/dev/null; }
+api() { curl -fsS -m "${2:-10}" "http://127.0.0.1:$(port)$1"; }              # GET
+post() { curl -fsS -m "${3:-120}" -X POST "http://127.0.0.1:$(port)$1" -H 'Content-Type: application/json' -d "$2"; }
+jqv() { command -v jq >/dev/null 2>&1 && jq -r "$1" 2>/dev/null || sed -n 's/.*"'"$2"'":\([0-9]*\).*/\1/p'; }
+
+# ---------------------------------------------------------------- up: turn it on (+ connect this project)
+# Decide how much of the machine to use. Sets BUDGET_ENV (extra env for the daemon). Honours flags
+# (--max | --budget N | --cores N | --mem NG) for agents/scripts; otherwise asks a human at a terminal;
+# otherwise (an agent with no flag) defaults to the whole machine and says how to cap it.
+choose_budget() {
+  BUDGET_ENV=""
+  case "${1:-}" in
+    --max)                 BUDGET_ENV="ARXAEL_BUDGET_PCT=100" ;;
+    --budget) BUDGET_ENV="ARXAEL_BUDGET_PCT=${2:-100}" ;;
+    --cores)  BUDGET_ENV="ARXAEL_CORES=${2:-}" ;;
+    --mem)    BUDGET_ENV="ARXAEL_USABLE_RAM_MB=$(( ${2%[gG]} * 1024 ))" ;;
+    "" )
+      if [ -t 0 ]; then
+        say "How much of this machine should it use? (it shares the box with your other apps)"
+        say "  ${B}[Enter]${D} all of it (max)   ·   easy mode: a percent like ${B}80${D} / ${B}60${D}"
+        say "  exact: ${B}8c${D} (8 cores)   ·   ${B}16g${D} (16 GB)   ·   finest: set ARXAEL_MAX_CONCURRENT / ARXAEL_PER_BUILD_MB (see docs/SETUP.md)"
+        printf '> '; read -r ans || ans=""
+        case "$ans" in
+          "")        BUDGET_ENV="" ;;                                   # max (no cap)
+          *c|*C)     BUDGET_ENV="ARXAEL_CORES=${ans%[cC]}" ;;
+          *g|*G)     BUDGET_ENV="ARXAEL_USABLE_RAM_MB=$(( ${ans%[gG]} * 1024 ))" ;;
+          *[!0-9]*)  say "$WARN Did not understand '\''$ans'\'' — using the whole machine." ;;
+          *)         BUDGET_ENV="ARXAEL_BUDGET_PCT=$ans" ;;
+        esac
+      else
+        say "(Using the whole machine. Easy cap: ${B}arxael up --budget 60${D}. Exact: ${B}--cores 8${D} / ${B}--mem 16g${D}. Finest: ARXAEL_MAX_CONCURRENT / ARXAEL_PER_BUILD_MB — see docs/SETUP.md.)"
+      fi ;;
+    *) say "$WARN Unknown option '\''$1'\'' — using the whole machine." ;;
+  esac
+}
+
+cmd_up() {
+  local gh; gh="$(find_gradle_home)"
+  if [ -z "$gh" ]; then
+    say "$ERR I need Java's build tool (Gradle) and couldn't find it."
+    say "   One-time setup: ${B}bash $HERE/scripts/install.sh${D}   then run ${B}arxael up${D} again."
+    exit 1
+  fi
+  if [ ! -x "$(core_bin)" ]; then
+    say "$WARN First run — building the helper once (takes a minute)…"
+    ( cd "$HERE" && ARXAEL_GRADLE_HOME="$gh" ./gradlew -q :core:installDist ) || { say "$ERR Build failed. See above."; exit 1; }
+  fi
+
+  if is_running; then
+    say "$OK Already on."
+  else
+    local BUDGET_ENV; choose_budget "$@"
+    # pick a free port so it never clashes with anything else you are running
+    local p=8723; while curl -fsS -m1 "http://127.0.0.1:$p/health" >/dev/null 2>&1; do p=$((p+1)); done
+    echo "$p" > "$PORT_FILE"
+    say "Starting your helper…"
+    env ${BUDGET_ENV} ARXAEL_GRADLE_HOME="$gh" ARXAEL_PORT="$p" ARXAEL_STATE_DIR="$STATE" \
+      setsid "$(core_bin)" >"$LOG_FILE" 2>&1 < /dev/null &
+    echo $! > "$PID_FILE"
+    for _ in $(seq 1 50); do api /health 1 >/dev/null 2>&1 && break; sleep 0.2; done
+    if ! api /health 2 >/dev/null 2>&1; then say "$ERR It did not start. Last lines of the log:"; tail -5 "$LOG_FILE"; exit 1; fi
+    say "$OK It's on (port $(port))."
+  fi
+
+  # If you are standing in a project, connect it so agents can start working on it.
+  if git -C . rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    connect_current_project
+  else
+    say ""
+    say "Tip: go into your project folder and run ${B}arxael up${D} again to connect it."
+  fi
+  say ""
+  say "You're set. Check on it any time with ${B}arxael status${D}, or turn it off with ${B}arxael stop${D}."
+}
+
+connect_current_project() {
+  # The shared copy agents merge into is a bare 'hub' clone kept beside your project — your working files
+  # are never touched. Created once, reused after that.
+  local top; top="$(git -C . rev-parse --show-toplevel)"
+  local name; name="$(basename "$top")"
+  local hub="$STATE/hubs/$name.git"
+  if [ ! -d "$hub" ]; then
+    if ! git -C "$top" rev-parse --verify -q main >/dev/null 2>&1; then
+      say "$WARN Your project has no main branch yet, so I cannot connect it. (Commit something on main first.)"
+      return
+    fi
+    say "Connecting ${B}$name${D} (one-time setup of a shared copy)…"
+    git clone -q --bare "$top" "$hub" || { say "$ERR Couldn't set up the shared copy."; return; }
+    git -C "$hub" config user.email arxael@local; git -C "$hub" config user.name arxael
+  fi
+  local res; res="$(post /merge/register "{\"repo\":\"$hub\",\"gateWorktrees\":4}" 120 2>/dev/null)"
+  if echo "$res" | grep -q '"ok":true'; then
+    local mods; mods="$(echo "$res" | jqv '.modules' modules)"
+    say "$OK Connected ${B}$name${D}${mods:+ ($mods modules)}. Agents can now submit changes; merged work lands in:"
+    say "   $hub   (get it with: ${B}git pull \"$hub\" main${D})"
+  else
+    say "$WARN Couldn't connect the project. Run ${B}arxael logs${D} to see why."
+  fi
+}
+
+# ---------------------------------------------------------------- status: plain-language health
+cmd_status() {
+  if ! is_running; then say "$ERR Not running. Turn it on with ${B}arxael up${D}."; exit 1; fi
+  local h; h="$(api /health 5 2>/dev/null)" || { say "$ERR Running but not answering — try ${B}arxael stop${D} then ${B}arxael up${D}."; exit 1; }
+  local cores tgt errs ram bind
+  cores="$(echo "$h" | jqv '.cores' cores)"; tgt="$(echo "$h" | jqv '.concurrencyTarget' concurrencyTarget)"
+  errs="$(echo "$h" | jqv '.recentErrorCount' recentErrorCount)"
+  ram="$(echo "$h" | jqv '.usableRamMb' usableRamMb)"; bind="$(echo "$h" | sed -n 's/.*"bindingConstraint":"\([a-z]*\)".*/\1/p')"
+  local ramg=""; [ -n "${ram:-}" ] && ramg="$(( ram / 1024 )) GB RAM"
+  say "$OK ${B}On${D} — detected ${cores:-?} cores${ramg:+ + $ramg} → running up to ${B}${tgt:-?}${D} builds at once${bind:+ (limited by: $bind)}."
+  say "   (auto-sized to this machine; it adjusts itself as load + memory change — nothing to configure.)"
+  local m; m="$(api /merge/status 5 2>/dev/null)"
+  if echo "$m" | grep -q '"registered":true'; then
+    local landed reverts inflight queued msg
+    landed="$(echo "$m" | jqv '.landed' landed)"; reverts="$(echo "$m" | jqv '.reverts' reverts)"; inflight="$(echo "$m" | jqv '.inFlightGates' inFlightGates)"
+    queued="$(echo "$m" | jqv '.queueDepth' queueDepth)"
+    msg="$OK ${B}${landed:-0}${D} change(s) merged so far"
+    [ "${reverts:-0}" != 0 ] && msg="$msg, ${reverts} undone (did not pass tests)"
+    [ "${queued:-0}" != 0 ] && msg="$msg, ${queued} waiting in line"
+    [ "${inflight:-0}" != 0 ] && msg="$msg, ${inflight} being checked right now"
+    say "$msg."
+  else
+    say "$WARN No project connected yet — go into your project and run ${B}arxael up${D}."
+  fi
+  if [ "${errs:-0}" != "0" ] && [ -n "${errs:-}" ]; then
+    say "$WARN ${errs} recent problem(s). See them with ${B}arxael logs${D}."
+  else
+    say "$OK No problems."
+  fi
+}
+
+# ---------------------------------------------------------------- logs: recent activity, in plain words
+cmd_logs() {
+  local f="$STATE/events.jsonl"
+  [ -f "$f" ] || { say "Nothing yet."; exit 0; }
+  say "${B}Recent activity:${D}"
+  tail -n 40 "$f" | while IFS= read -r line; do
+    case "$line" in
+      *merge_land*)        say "  $OK merged a change" ;;
+      *merge_revert*)      say "  $WARN undid a change that broke tests" ;;
+      *merge_bounce*)      say "  $WARN sent a change back (did not pass / conflicted)" ;;
+      *_error*|*_failed*)  say "  $ERR problem: $(echo "$line" | sed -n 's/.*"error":"\([^"]*\)".*/\1/p')" ;;
+      *invoke_overloaded*) say "  $WARN busy — a build had to wait" ;;
+      *governor_resize*)   say "  $OK adjusted how many builds run at once (matching your machine)" ;;
+      *merge_register*)    say "  $OK connected a project" ;;
+    esac
+  done
+}
+
+# ---------------------------------------------------------------- verify: prove the system actually works
+# One command for "does it work?" — builds, runs the unit tests, the acceptance smoke (a real daemon + real
+# build), and the multi-language end-to-end proof (real toolchains, self-skips any that aren't installed).
+# This is how we DECIDE things are good here: proof, not assertion.
+cmd_verify() {
+  local GH; GH="$(find_gradle_home)"
+  [ -n "$GH" ] || { say "$ERR No Gradle/JDK found. Run ${B}scripts/install.sh${D} first."; exit 1; }
+  if is_running; then say "$WARN The daemon is running; ${B}arxael stop${D} first (verify starts its own)."; exit 1; fi
+  local log; log="$(mktemp)"
+  export ARXAEL_GRADLE_HOME="$GH"
+
+  say "→ unit tests + coverage"
+  if "$HERE/gradlew" -p "$HERE" -q :core:test :core:installDist >"$log" 2>&1; then say "  $OK unit tests pass"
+  else say "  $ERR unit tests failed:"; tail -25 "$log"; rm -f "$log"; exit 1; fi
+
+  say "→ acceptance smoke (real daemon, real build, allowlist, /metrics, adapters)"
+  if bash "$HERE/scripts/smoke.sh" >"$log" 2>&1; then say "  $OK smoke green"
+  else say "  $ERR smoke failed:"; tail -25 "$log"; rm -f "$log"; exit 1; fi
+
+  say "→ multi-language end-to-end (real toolchains; skips any not installed)"
+  if bash "$HERE/bench/lang_smoke.sh" >"$log" 2>&1; then
+    say "  $OK $(grep -oE '[0-9]+ real-toolchain invocations' "$log" | head -1 || echo 'multi-language') proven"
+  else say "  $ERR multi-language proof failed:"; tail -25 "$log"; rm -f "$log"; exit 1; fi
+
+  rm -f "$log"
+  say "$OK Verified — builds, tests green, smoke green, multi-language works."
+  say "  (throughput proof — the per-worktree-home win — is ${B}bench/merge_http_load.py${D}; merge-on-pytest is ${B}bench/lang_merge_smoke.py${D}.)"
+}
+
+# ---------------------------------------------------------------- bench: prove it lands more PRs/min
+# The decision criterion for "is a change good?" is throughput. This runs the real MergeOrchestrator over
+# HTTP against the wide-DAG fixture and prints merges/min — and with --ab, runs it BOTH with and without the
+# per-worktree-home cache-lock fix so you can SEE the win, not take it on faith.
+cmd_bench() {
+  local GH; GH="$(find_gradle_home)"
+  [ -n "$GH" ] || { say "$ERR No Gradle/JDK found. Run ${B}scripts/install.sh${D} first."; exit 1; }
+  if is_running; then say "$WARN The daemon is running; ${B}arxael stop${D} first (bench starts its own)."; exit 1; fi
+  export ARXAEL_GRADLE_HOME="$GH"
+  "$HERE/gradlew" -p "$HERE" -q :core:installDist >/dev/null 2>&1 || { say "$ERR build failed"; exit 1; }
+  local agents="${2:-6}" cores="${3:-12}" window="${4:-60}"
+  run_one() { # $1 = per-worktree-home true|false ; echoes "N merges/min (p50 ...)"
+    local out="/tmp/arxael-bench-$1.jsonl"; rm -f "$out"
+    ARXAEL_PER_WORKTREE_HOME="$1" python3 "$HERE/bench/merge_http_load.py" --auto-warm \
+      --agents "$agents" --cores "$cores" --max-concurrent "$cores" --reserved-high 2 \
+      --window "$window" --threshold 4 --port 8795 --root "/tmp/arxael-bench-$1" --out "$out" >/dev/null 2>&1
+    python3 -c "import json;d=json.loads(open('$out').read().splitlines()[-1]);print('%(merges_per_min)s merges/min (p50 %(p50TimeToLandMs)sms, landed=%(landed)s, reverts=%(reverts)s)'%d)" 2>/dev/null \
+      || echo "(no result — see /tmp/arxael-bench-$1)"
+  }
+  if [ "${1:-}" = "--ab" ]; then
+    say "→ A/B: per-worktree-home ON vs OFF (${agents} agents, ${cores} cores, ${window}s each)…"
+    local on off
+    on="$(run_one true | tail -1)"; off="$(run_one false | tail -1)"
+    say "  ON  (lock removed): $on"
+    say "  OFF (shared lock):  $off"
+  else
+    say "→ throughput (${agents} agents, ${cores} cores, ${window}s)…"
+    say "  $(run_one true | tail -1)"
+  fi
+}
+
+# ---------------------------------------------------------------- stop: turn off, clean up after itself
+cmd_stop() {
+  if is_running; then post /shutdown '{}' 2 >/dev/null 2>&1 || true; sleep 2; fi
+  bash "$HERE/scripts/reap-daemons.sh" >/dev/null 2>&1 || true   # belt-and-braces: clear any leftover build daemons
+  rm -f "$PID_FILE"
+  say "$OK Off. Everything cleaned up."
+}
+
+case "${1:-}" in
+  up|start)   shift; cmd_up "$@" ;;
+  status)     cmd_status ;;
+  logs)       cmd_logs ;;
+  stop|down)  cmd_stop ;;
+  verify|prove) cmd_verify ;;
+  bench)      cmd_bench "${2:-}" "${3:-}" "${4:-}" "${5:-}" ;;
+  ""|help|-h|--help)
+    say "${B}arxael${D} — many AI agents, one project, no mess."
+    say ""
+    say "${B}You only need three words:${D}"
+    say "  ${B}arxael up${D}      turn it on (and connect the project you're in)"
+    say "  ${B}arxael status${D}  is it working? any problems?"
+    say "  ${B}arxael stop${D}    turn it off (cleans up after itself)"
+    say ""
+    say "AI agents don't run any commands — after ${B}arxael up${D} they just call the API:"
+    say "  curl -s 127.0.0.1:\$(cat ~/.arxael/port 2>/dev/null || echo 8723)/   ${D}# self-describing; see AGENTS.md${D}"
+    say ""
+    say "Occasionally useful: ${B}logs${D} (what happened) · ${B}verify${D} (prove it works) · ${B}bench${D} (measure throughput)" ;;
+  *) say "$ERR Unknown command: $1. Try ${B}arxael help${D}." ; exit 1 ;;
+esac

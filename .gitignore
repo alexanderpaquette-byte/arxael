@@ -1,0 +1,27 @@
+# Build output
+.gradle/
+build/
+**/build/
+# Eclipse/JDT output from the VS Code Java extension (redhat.java)
+bin/
+**/bin/
+.classpath
+.project
+.settings/
+.factorypath
+
+# Daemon runtime state (event log, per-worktree output-bases, pidfiles, sockets)
+.arxael/
+*.pid
+
+# Benchmark raw output (regenerable)
+bench/out/
+bench/results/*.raw
+
+# Python
+__pycache__/
+*.pyc
+
+# OS / editor
+.DS_Store
+*.swp

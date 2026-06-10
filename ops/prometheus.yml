@@ -1,0 +1,20 @@
+# Prometheus scrape config for arxael-dev-kit.
+#
+# The daemon exposes Prometheus metrics natively at GET /metrics (no exporter, no extra deps).
+# Point your Prometheus at it:
+#
+#   prometheus --config.file=ops/prometheus.yml
+#
+# The daemon binds loopback only (trust model), so run Prometheus on the same box (or scrape via an
+# SSH tunnel). Default port 8723; override with ARXAEL_PORT and update the target below.
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: arxael
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["127.0.0.1:8723"]
+        labels:
+          service: arxael-dev-kit

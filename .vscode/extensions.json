@@ -1,0 +1,15 @@
+{
+  "//": "Project-relevant recommendations for contributors. Personal-taste extensions (peacock, resourcemonitor, gitlens) are intentionally NOT here — install those yourself.",
+  "recommendations": [
+    "fwcd.kotlin",
+    "redhat.java",
+    "vscjava.vscode-java-pack",
+    "vscjava.vscode-gradle",
+    "shd101wyy.markdown-preview-enhanced",
+    "yzhang.markdown-all-in-one",
+    "bierner.markdown-mermaid",
+    "humao.rest-client",
+    "ms-azuretools.vscode-containers",
+    "gruntfuggly.todo-tree"
+  ]
+}

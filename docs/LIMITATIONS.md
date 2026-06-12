@@ -134,6 +134,18 @@ That is the entire security boundary. Critically:
 Cache/worktree separation is for lock-contention and speed — **not** a security boundary. Treat "trusted local
 agents on loopback" as a hard precondition, not a default you can drift away from.
 
+### Network access — loopback only, with one opt-out update check
+The daemon binds **loopback only** and all agent traffic stays on `127.0.0.1`; **nothing about your code,
+builds, or usage ever leaves the box.** There are exactly two outbound calls, both to GitHub's public release
+infrastructure and neither carrying any code or telemetry:
+1. **Engine fetch** (npm install / `arxael upgrade`): downloads the JVM engine artifact from the project's
+   GitHub releases (integrity-checked against a `.sha256` sidecar). Pin it with `ARXAEL_ENGINE_VERSION`.
+2. **Update check**: an **interactive-only, once/day** GET to the GitHub releases API to say "a newer version
+   exists." It sends nothing but the request itself, **never auto-updates**, is **off for agents / non-TTY /
+   `CI`** (agents never beacon), is throttled via a local cache, and is opt-out
+   (`ARXAEL_NO_UPDATE_CHECK=1`, `DO_NOT_TRACK`). Updating is always a deliberate, user-initiated action, so a
+   vetted/pinned build is never changed out from under you.
+
 ## 5. Validation is on a synthetic fixture at small scale
 
 The performance and soundness results in [ARCHITECTURE.md](ARCHITECTURE.md) are real and re-tested, but they were

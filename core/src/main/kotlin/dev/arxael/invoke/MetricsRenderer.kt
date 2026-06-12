@@ -29,6 +29,12 @@ object MetricsRenderer {
         sb.append("# HELP arxael_up Daemon liveness (1 = serving).\n")
         sb.append("# TYPE arxael_up gauge\n")
         sb.append("arxael_up ${if (up) 1 else 0}\n")
+        // Engine version as a label on a constant 1 (Prometheus build-info idiom). Strings are dropped by the
+        // section loop below, so this is emitted directly. Label value escaped per the exposition format.
+        val ver = dev.arxael.BuildInfo.version.replace("\\", "\\\\").replace("\"", "\\\"")
+        sb.append("# HELP arxael_build_info Running engine version (value is always 1; read the 'version' label).\n")
+        sb.append("# TYPE arxael_build_info gauge\n")
+        sb.append("arxael_build_info{version=\"$ver\"} 1\n")
         for ((prefix, map) in sections) {
             for ((key, value) in map) {
                 val num = toNumber(value) ?: continue // strings (e.g. bindingConstraint) are skipped, not faked

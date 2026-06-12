@@ -3,6 +3,21 @@
 All notable changes to Arxael. Versions follow [SemVer](https://semver.org/) (pre-1.0: minor =
 notable change, patch = fix).
 
+## [1.2.0] — 2026-06-12
+
+Version introspection + update awareness — **notify-only, never auto-update** (see LIMITATIONS "Network access"):
+
+- **Daemon self-version:** `GET /health` includes `"version"`, and `GET /metrics` emits
+  `arxael_build_info{version="x.y.z"}` (build-info idiom) — baked from the single-source `VERSION` file into a
+  classpath resource at build time, so the running engine is always identifiable and telemetry is taggable.
+- **`arxael version`** — shows the CLI / engine / running-daemon versions, and **warns on skew** (warm daemon
+  older than what's installed → restart to adopt).
+- **Update check** — interactive-only, once/day, compares your engine to the latest GitHub release and prints
+  "update available". **Never auto-updates**; off for agents / non-TTY / `CI`; opt-out via
+  `ARXAEL_NO_UPDATE_CHECK` / `DO_NOT_TRACK`; throttled via an atomic local cache; sends no code or telemetry.
+- **`arxael upgrade`** — prints how to update (and how to pin); installs nothing on its own.
+- **Pinning:** `ARXAEL_ENGINE_VERSION` keeps a specific, vetted build in place across installs + update checks.
+
 ## [1.1.2] — 2026-06-12
 
 Self-tuning merge routing is now the default. `ARXAEL_MERGE_MODE` selects the merge risk posture —

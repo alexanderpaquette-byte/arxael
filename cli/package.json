@@ -1,6 +1,6 @@
 {
   "name": "arxael",
-  "version": "1.0.5",
+  "version": "1.2.0",
   "description": "Run many AI coding agents on one box without breaking `main` — a merge gate that lands their PRs onto a shared main (auto-reverting anything red) plus one warm, bounded, shared build/test executor.",
   "keywords": [
     "ai",

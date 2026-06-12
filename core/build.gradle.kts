@@ -31,6 +31,24 @@ kotlin {
     jvmToolchain(21)
 }
 
+// Bake the resolved version (root VERSION file — see root build.gradle.kts) into a classpath resource so the
+// RUNNING daemon can report its own version on /health and /metrics. The jar manifest does NOT carry
+// Implementation-Version, and a jar *filename* isn't introspectable at runtime — a generated resource is the
+// robust path. BuildInfo reads "/arxael-version"; falls back to "0.0.0-dev" for a bare classpath.
+val generateVersionResource by tasks.registering {
+    val outDir = layout.buildDirectory.dir("generated/version")
+    val v = project.version.toString()
+    inputs.property("version", v)
+    outputs.dir(outDir)
+    doLast {
+        outDir.get().file("arxael-version").asFile.apply {
+            parentFile.mkdirs()
+            writeText(v)
+        }
+    }
+}
+sourceSets["main"].resources.srcDir(generateVersionResource)
+
 tasks.test {
     useJUnitPlatform()
     finalizedBy(tasks.named("jacocoTestReport"))
@@ -59,6 +77,8 @@ pitest {
     excludedClasses.set(setOf(
         "dev.arxael.protocol.*",
         "dev.arxael.Main*", "dev.arxael.MainKt*",
+        "dev.arxael.BuildInfo*",                            // version-resource read (IO + fallback) — not logic
+
         "dev.arxael.invoke.InvokeServer*",
         "dev.arxael.adapter.gradle.*",
         // process-shelling adapters + their runner (ProcessBuilder I/O — covered by adapter unit tests):

@@ -91,6 +91,18 @@ The bound and every concurrency knob scale to the box. Key knobs (see `BoxConfig
 | `ARXAEL_GATE_FILL_HYSTERESIS` | on (under balanced) | sticky regime — don't flap between optimistic and batched |
 | `ARXAEL_BATCHCAP_AWARE` | on (under balanced) | force batch when a batch dominates the gate pool |
 | `ARXAEL_BATCHCAP_DOMINANCE_FACTOR` | 2.0 | the dominance threshold for batchCap-awareness |
+| `ARXAEL_ENGINE_VERSION` | (latest release) | **pin a specific, vetted engine version** — honoured by the npm install + the update check; updates are NEVER automatic, so a pinned build stays put |
+| `ARXAEL_NO_UPDATE_CHECK` | unset | set to `1` to disable the once/day "update available" check (also disabled by `DO_NOT_TRACK`, `CI`, or any non-interactive/agent run — agents never beacon) |
+| `ARXAEL_REPO` | `alexanderpaquette-byte/arxael` | the GitHub repo polled for the latest release (update check + engine fetch) |
+
+## 5b. Version & updates (introspection, notify-only)
+The running daemon reports its engine version on `GET /health` (`"version"`) and `GET /metrics`
+(`arxael_build_info{version}`). The CLI: `arxael version` shows the CLI / engine / running-daemon versions and
+**warns if the warm daemon is older than what's installed** (restart to adopt). An **interactive-only, once/day**
+check compares your engine against the latest GitHub release and prints "update available" — it **never
+auto-updates** (so vetted/pinned builds stay put; pin with `ARXAEL_ENGINE_VERSION`), is **off for agents /
+non-TTY / `CI`**, and is opt-out (`ARXAEL_NO_UPDATE_CHECK=1` / `DO_NOT_TRACK`). `arxael upgrade` prints how to
+update; it never installs anything on its own. See LIMITATIONS "Network access" for the privacy posture.
 
 ## 5c. Adaptive auto-sizing (tracks the box AND the project's growth)
 The startup bound (`min(coreBound, memBound)`) is only a STARTING estimate. A governor then adapts the live

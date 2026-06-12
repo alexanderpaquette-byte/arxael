@@ -14,7 +14,7 @@ class MetricsRendererTest {
         val nameRe = Regex("^[a-zA-Z_:][a-zA-Z0-9_:]*$")
         for (line in out.lineSequence()) {
             if (line.isEmpty() || line.startsWith("#")) continue
-            val name = line.substringBefore(' ')
+            val name = line.substringBefore(' ').substringBefore('{')  // strip any {label="..."} block
             assertTrue(nameRe.matches(name), "emitted an invalid Prometheus metric name: '$name'")
         }
         assertContains(out, "arxael_executor_weird_key")
@@ -82,8 +82,15 @@ class MetricsRendererTest {
         // every non-comment, non-blank line must be a metric whose name appeared in a prior TYPE line
         val typed = out.lines().filter { it.startsWith("# TYPE ") }.map { it.split(" ")[2] }.toSet()
         out.lines().filter { it.isNotBlank() && !it.startsWith("#") }.forEach { line ->
-            val name = line.substringBefore(" ")
+            val name = line.substringBefore(" ").substringBefore("{")  // base name, sans any {label} block
             assertTrue(name in typed, "metric '$name' has no TYPE line")
         }
+    }
+
+    @Test
+    fun `emits build_info with the version as a label`() {
+        val out = MetricsRenderer.render(emptyList())
+        assertContains(out, "# TYPE arxael_build_info gauge")
+        assertContains(out, "arxael_build_info{version=\"${dev.arxael.BuildInfo.version}\"} 1")
     }
 }

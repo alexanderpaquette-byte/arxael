@@ -51,7 +51,9 @@ and reverts/bounces/errors.
 
 Metric names are `arxael_<section>_<snake_case_key>`. Sections: `executor_*` (capacity/demand/memory),
 `governor_*` (adaptive sizing), `merge_*` (the merge orchestrator), `events_*` (recent fault count), plus
-`arxael_up`. Cumulative counts (`landed`, `reverts`, `bounced_*`, `errors`, …) are Prometheus **counters**
+`arxael_up` and `arxael_build_info{version="x.y.z"}` (the running engine version — a constant-`1` gauge whose
+value lives in the label, the Prometheus build-info idiom; use it to tag dashboards or spot a stale daemon).
+Cumulative counts (`landed`, `reverts`, `bounced_*`, `errors`, …) are Prometheus **counters**
 with a `_total` suffix; everything else is a **gauge**. The renderer is
 `core/.../invoke/MetricsRenderer.kt` (pure + unit-tested in `MetricsRendererTest`).
 

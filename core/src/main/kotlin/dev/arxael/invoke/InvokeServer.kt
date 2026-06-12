@@ -95,7 +95,7 @@ class InvokeServer(
               "loopbackOnly": true,
               "auth": "mutating endpoints (POST /invoke, /warmup, /merge/register, /merge/submit, /shutdown) require header 'X-Arxael-Token: <contents of ~/.arxael/token>'; read endpoints (/, /health, /metrics, /merge/status, /merge/pr) are open. Set ARXAEL_NO_AUTH=true to disable.",
               "endpoints": [
-                {"method":"GET","path":"/health","desc":"liveness, live capacity (concurrencyTarget/cores), recentErrors"},
+                {"method":"GET","path":"/health","desc":"liveness, engine version, live capacity (concurrencyTarget/cores), recentErrors"},
                 {"method":"GET","path":"/metrics","desc":"Prometheus exposition format (scrape target); see ops/grafana-dashboard.json"},
                 {"method":"POST","path":"/invoke","body":{"adapter":"gradle","worktree":"/abs/path/to/checkout","tasks":["test"],"agentId":"you"},"desc":"run a build/test in a worktree on the warm executor; status SUCCESS|FAILED|OVERLOADED|ERROR|REJECTED (REJECTED=args not on allowlist, HTTP 422)"},
                 {"method":"POST","path":"/warmup","body":{"adapter":"gradle","worktree":"/abs/path/to/checkout"},"desc":"optional: pre-spawn the build daemon so your first build is warm"},
@@ -114,6 +114,7 @@ class InvokeServer(
         if (ex.requestMethod != "GET") return respond(ex, 405, """{"error":"GET only"}""")
         val snap = executor.snapshot().toMutableMap()
         snap["ok"] = true
+        snap["version"] = dev.arxael.BuildInfo.version
         snap["cores"] = config.cores
         governor?.let { snap["adaptive"] = it.snapshot().toString() }
         val recent = events.recentErrors()

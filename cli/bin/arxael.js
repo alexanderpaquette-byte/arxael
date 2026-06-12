@@ -32,13 +32,40 @@ function failJava(jv) {
   process.exit(1);
 }
 
+// Best-effort: ask the RUNNING daemon its version (loopback /health). Never throws; returns null on any failure.
+async function daemonVersion() {
+  try {
+    const fs = require('fs'), http = require('http'), os = require('os');
+    const state = process.env.ARXAEL_STATE_DIR || path.join(os.homedir(), '.arxael');
+    const port = parseInt(String(fs.readFileSync(path.join(state, 'port'), 'utf8')).trim(), 10);
+    if (!port) return null;
+    return await new Promise((resolve) => {
+      const req = http.get({ host: '127.0.0.1', port, path: '/health', timeout: 1500 }, (res) => {
+        let b = ''; res.on('data', (c) => { b += c; }); res.on('end', () => {
+          const m = b.match(/"version":"([^"]+)"/); resolve(m ? m[1] : null);
+        });
+      });
+      req.on('error', () => resolve(null));
+      req.on('timeout', () => { req.destroy(); resolve(null); });
+    });
+  } catch { return null; }
+}
+
 (async () => {
   const args = process.argv.slice(2);
   const cmd = args[0] || '';
 
   if (cmd === '--version' || cmd === '-v' || cmd === 'version') {
+    const engine = core.cachedVersion();
     console.log(`arxael CLI ${pkg.version}`);
-    console.log(`engine     ${core.cachedVersion() || 'not installed yet (run `arxael up`)'}`);
+    console.log(`engine     ${engine || 'not installed yet (run `arxael up`)'}`);
+    const dv = await daemonVersion();
+    if (dv) {
+      console.log(`daemon     ${dv} (running)`);
+      if (engine && dv !== engine) {
+        console.log(`\n⚠ the running daemon is ${dv} but ${engine} is installed — restart to adopt: arxael stop && arxael up`);
+      }
+    }
     return;
   }
   if (cmd === 'verify' || cmd === 'bench') {

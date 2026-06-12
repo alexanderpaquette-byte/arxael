@@ -2,6 +2,8 @@
 .gradle/
 build/
 **/build/
+# Release engine artifact (built by build-core-artifact.sh, uploaded to the GitHub release — never committed)
+dist/
 # Eclipse/JDT output from the VS Code Java extension (redhat.java)
 bin/
 **/bin/

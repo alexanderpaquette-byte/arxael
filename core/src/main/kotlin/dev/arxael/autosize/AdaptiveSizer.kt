@@ -32,6 +32,7 @@ object AdaptiveSizer {
     fun nextTarget(
         current: Int, caps: Caps, memAvailMb: Long, headroomMb: Long, perBuildMb: Long,
         waiting: Int, cpuSaturated: Boolean, ioSaturated: Boolean = false,
+        goodputStalled: Boolean = false,
     ): Int {
         fun clamp(n: Int) = n.coerceIn(caps.floor, maxOf(caps.floor, caps.ceiling)) // tolerate floor>ceiling (no throw)
         // PRESSURE: available below the headroom floor -> (about to be) oversubscribed. Multiplicative
@@ -44,7 +45,11 @@ object AdaptiveSizer {
         // DEMAND + room for the new build PLUS a margin build (a DEAD-BAND of >=2) + spare CPU/IO -> grow by 1.
         // Requiring >=2 (not >=1) means after growing there's still >=1 build of slack, so we don't grow into
         // an immediate pressure-shrink next tick — that +1/-1 thrash was the oscillation bug. Otherwise HOLD.
-        if (waiting > 0 && roomBuilds >= 2 && !cpuSaturated && !ioSaturated) return clamp(current + 1)
+        // H2 SATURATION SIGNAL: at the goodput peak (~0.5 builds/core) memory/CPU/IO all still read "fine" (CPU
+        // ~40%, RAM ok, work queued), so the rule above would grow PAST the peak — p95 inflates 10-40x for zero
+        // goodput, marching toward the daemon-collapse cliff. [goodputStalled] is the missing signal the governor
+        // measures (growing concurrency stopped raising the completion rate); when set, HOLD instead of growing.
+        if (waiting > 0 && roomBuilds >= 2 && !cpuSaturated && !ioSaturated && !goodputStalled) return clamp(current + 1)
         return clamp(current)
     }
 

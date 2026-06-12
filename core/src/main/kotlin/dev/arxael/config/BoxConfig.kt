@@ -112,6 +112,81 @@ data class BoxConfig(
      *  undeclared coupling the dependency graph can't see) before its narrow declared closure is trusted.
      *  0 = trust the closure immediately. ARXAEL_OPTIMISTIC_CONFIRMATIONS. */
     val optimisticConfirmations: Int = 2,
+    /** Merge safety/speed dial: conservative|balanced|fast (ARXAEL_MERGE_MODE). A preset over the knobs below
+     *  so a user picks a risk posture without learning each threshold; explicit knobs still win. */
+    val mergeMode: String = "balanced",
+    /** Default routing threshold a registered project uses when it doesn't pass one: a change whose module
+     *  closure is ≤ this lands optimistically (verify-async), else batched. Derived from [mergeMode]
+     *  (conservative=0 → all batched, balanced=4, fast=16). */
+    val routeThreshold: Int = 4,
+    /** Disable the local API token (ARXAEL_NO_AUTH=true). For fully-trusted/dev boxes and the test harnesses;
+     *  the daemon then accepts any loopback caller with no X-Arxael-Token header. */
+    val noAuth: Boolean = false,
+    /** H1c gate-pool backpressure (ARXAEL_GATE_BACKPRESSURE, default on): admit PRs to the optimistic fast path
+     *  only up to the async-gate pool's free headroom, routing the overflow through the sound batched gate. Caps
+     *  the unverified-on-main backlog and makes auto adapt to build weight + box live. false = legacy unbounded
+     *  optimistic admission. */
+    val gateBackpressure: Boolean = true,
+    /** H1c' backpressure bound (ARXAEL_MAX_VERIFY_LAG_MS, default 25s): the longest projected async-gate verify-lag
+     *  (backlog * recentGateMs / gateCapacity) tolerated before optimistic overflow routes to the batched gate.
+     *  Higher = more optimistic admission under slow gates; lower = batch sooner. */
+    val maxVerifyLagMs: Long = 25_000,
+    /** H7 conflict-adaptive routing (ARXAEL_CONFLICT_ADAPTIVE_ROUTING): derive the batch-vs-optimistic threshold from
+     *  the measured textual-bounce rate instead of cores. Low conflict -> batch (amortize clean PRs); high conflict ->
+     *  optimistic. The routing optimum is driven by conflict rate, not cores (proven iter9/iter10). */
+    val conflictAdaptiveRouting: Boolean = false,
+    /** The "optimistic" closure-threshold H7 ramps to under high conflict (= the fast-mode value). */
+    val conflictOptimisticThreshold: Int = 16,
+    /** H7' signal tuning (runtime-configurable for A/B + future gate-cost-adaptive crossover). EWMA weight per merge
+     *  outcome (ARXAEL_CONFLICT_EWMA_ALPHA, higher = faster-tracking) and the bounce-rate crossover at/above which to
+     *  flip batch->optimistic (ARXAEL_HIGH_CONFLICT_RATE). */
+    val conflictEwmaAlpha: Double = 0.05,
+    val highConflictRate: Double = 0.35,
+    /** H12 wall-clock decay (ARXAEL_CONFLICT_DECAY_TAU_S, seconds): also decay the conflict signal over wall-time so
+     *  it tracks time-based regime shifts at LOW merge volume (where the per-outcome EWMA lags). 0 = off (legacy). */
+    val conflictDecayTauS: Double = 0.0,
+    /** H13 optimistic wedge-recovery guard (ARXAEL_OPTIMISTIC_WEDGE_GUARD): re-queue innocent PRs that inherited a
+     *  red main instead of cascading-error, so a stuck bad commit degrades gracefully. */
+    val optimisticWedgeGuard: Boolean = true,
+    /** H15 load-aware routing (ARXAEL_LOAD_AWARE_ROUTING): suppress the optimistic flip when the gate pool is saturated
+     *  (optimistic is gate-processing-bound there -> batch amortizes better). */
+    val loadAwareRouting: Boolean = false,
+    /** H15 saturation fraction (ARXAEL_LOAD_AWARE_FRACTION): suppress the optimistic flip once inFlightGates reaches
+     *  ceil(fraction*gateCapacity). 1.0 = legacy "fully saturated" trigger; a lower value routes batch earlier (the
+     *  optimistic edge erodes before every worktree is busy). Only consulted when loadAwareRouting=true. */
+    val loadAwareFraction: Double = 1.0,
+    /** H16 revert-health guard (ARXAEL_REVERT_HEALTH_GUARD): on a revert-conflict (un-revertable bad commit -> main
+     *  wedged red), force batch routing for [revertHealthCooldownMs] so new PRs gate-before-landing and the cascade
+     *  stops. Keys on the actual wedge signal (revert failed), unlike H15's mis-firing pool-occupancy signal. */
+    val revertHealthGuard: Boolean = false,
+    val revertHealthCooldownMs: Long = 30_000,
+    /** H18 gate-fill routing (ARXAEL_GATE_FILL_ROUTING): route optimistic when (queueDepth+inFlightGates) >=
+     *  gateCapacity, else batch. The clean-production routing rule (iter28) that replaces the inverted conflict/load
+     *  proxies; self-scales per box via gateCapacity. Pair with revertHealthGuard for the non-gated wedge edge case. */
+    val gateFillRouting: Boolean = false,
+    /** H18 fill threshold fraction (ARXAEL_GATE_FILL_FRAC): route opt when pending >= ceil(frac*gateCapacity). 1.0 = pool full. */
+    val gateFillFrac: Double = 1.0,
+    /** H19 gate-fill hysteresis (ARXAEL_GATE_FILL_HYSTERESIS): sticky regime — leave opt only when pending < thr/2, so
+     *  the route doesn't flap when load sits at the threshold (the 32c/n25 valley). false = legacy binary trigger. */
+    val gateFillHysteresis: Boolean = false,
+    /** H23 batchCap-aware gate-fill (ARXAEL_BATCHCAP_AWARE): force batch when batchCap > factor*gateCapacity (batch
+     *  amortization dominates parallel opt). Closes the bc64 -41% mis-route. false = bare gate-fill. */
+    val batchCapAware: Boolean = false,
+    val batchCapDominanceFactor: Double = 2.0,
+    /** H17 route-bandit (ARXAEL_BANDIT_ROUTING): measure net throughput per route over a sliding window and route the
+     *  empirical winner (exploring every Kth window). The measure-don't-proxy router; box-adaptive by construction. */
+    val banditRouting: Boolean = false,
+    val banditWindowMs: Long = 12_000,
+    val banditExploreEvery: Int = 4,
+    val banditAlpha: Double = 0.5,
+    /** H8 conflict-aware batch composition (ARXAEL_DISJOINT_BATCH): when forming a batched gate, pick PRs whose
+     *  changed-file sets are pairwise disjoint and defer would-be-conflicting ones to a later batch — removes the
+     *  within-batch textual-bounce cascade so high-conflict load drains instead of terminal-bouncing. Off = FIFO. */
+    val disjointBatch: Boolean = false,
+    /** H2 governor saturation signal (ARXAEL_GOVERNOR_GOODPUT, default on): the adaptive governor learns a soft
+     *  concurrency ceiling at the goodput peak (where mem/cpu/io all still read "fine") instead of growing past it.
+     *  false = legacy grow-until-a-resource-saturates. */
+    val governorGoodputSignal: Boolean = true,
     /** Max PRs the merge orchestrator pulls into ONE batched gate. Higher = a slow real gate amortizes more
      *  PRs per run (the throughput lever on minute-scale builds); bisection keeps a red large batch cheap
      *  (O(k·log n)), so it's safe to raise. ARXAEL_MERGE_BATCH_CAP. */
@@ -133,6 +208,17 @@ data class BoxConfig(
      *  gradle adapter reads it per-run. Seeded from ARXAEL_RO_DEP_CACHE if the operator pins one. */
     val liveRoDepCache: java.util.concurrent.atomic.AtomicReference<String?> =
         java.util.concurrent.atomic.AtomicReference(roDepCachePinned)
+
+    /** H4: the gate-pool size to use when the client doesn't pin one (register gateWorktrees<=0). The async-gate
+     *  pool is the optimistic-path capacity; the campaign shows merge/build goodput PEAKS at ~4-8 concurrent
+     *  builds (NOT linear in cores) and the executor caps in-flight builds at ~maxConcurrent, so a flat default of
+     *  4 over-subscribes a 2-core box (thrash) and under-uses a 32-core box. Adapt it: scale with cores, hard-cap
+     *  at 8 (the goodput plateau), and never exceed the RAM budget (each gate worktree runs a full build). */
+    fun autoGateWorktrees(): Int {
+        val byCores = cores.coerceIn(2, 8)
+        val byRam = (usableRamMb / perBuildFootprintMb.coerceAtLeast(1)).toInt()
+        return minOf(byCores, byRam).coerceAtLeast(1)
+    }
 
     /** Result of resolving the global concurrency bound from the box + config. */
     data class Bounds(
@@ -264,7 +350,57 @@ data class BoxConfig(
                 env("ARXAEL_CONCURRENCY_CEILING")?.toIntOrNull() ?: maxOf(bounds.coreBound, bounds.maxConcurrent),
             )
             val governorIntervalMs = env("ARXAEL_GOVERNOR_MS")?.toLongOrNull() ?: 3000L
-            val optimisticConfirmations = maxOf(0, env("ARXAEL_OPTIMISTIC_CONFIRMATIONS")?.toIntOrNull() ?: 2)
+            // ARXAEL_MERGE_MODE: a single safety/speed dial mapping onto the routing threshold + verify-then-trust
+            // count, so users pick a risk posture without learning each knob. conservative = everything batched
+            // (gate-before-land, never an async revert); balanced = today's default; fast = more optimistic
+            // routing + skip the full-project warmup. Explicit knobs (below) still win when set.
+            val mergeMode = when (env("ARXAEL_MERGE_MODE")?.trim()?.lowercase()) {
+                "conservative" -> "conservative"; "fast" -> "fast"; else -> "balanced"
+            }
+            // AUTO (balanced) is box-adaptive: the MIXED routing (mid threshold) is pathological on scarce
+            // cores — its optimistic per-PR gates thrash the cores while the batched half starves (measured:
+            // thr=4 was the WORST at cores<=8, ~15/min + 41-87s p50 vs batch's ~35/min + 11.5s). So auto stays
+            // ~batch on small boxes and opens the optimistic band only as cores grow enough to absorb those
+            // gates (the instant-land sweet spot; old 16/32-core data). conservative/fast = manual overrides.
+            val autoThreshold = (cores - 8).coerceIn(0, 64)   // <=8 -> 0 (batch); 16 -> 8; 32 -> 24 (big end validated on a 32-core box)
+            val routeThreshold = when (mergeMode) {
+                "conservative" -> 0
+                "fast" -> maxOf(16, autoThreshold * 2)
+                else -> autoThreshold
+            }
+            val noAuth = env("ARXAEL_NO_AUTH")?.trim()?.lowercase() in setOf("1", "true", "yes")
+            // Default ON; only an explicit falsey value disables it (legacy unbounded optimistic admission).
+            val gateBackpressure = env("ARXAEL_GATE_BACKPRESSURE")?.trim()?.lowercase() !in setOf("0", "false", "no")
+            val maxVerifyLagMs = maxOf(0L, env("ARXAEL_MAX_VERIFY_LAG_MS")?.toLongOrNull() ?: 25_000L)
+            val conflictAdaptiveRouting = env("ARXAEL_CONFLICT_ADAPTIVE_ROUTING")?.trim()?.lowercase() in setOf("1", "true", "yes")
+            val conflictOptimisticThreshold = maxOf(16, autoThreshold * 2) // the fast-mode (optimistic) closure threshold
+            val disjointBatch = env("ARXAEL_DISJOINT_BATCH")?.trim()?.lowercase() in setOf("1", "true", "yes")
+            val conflictEwmaAlpha = (env("ARXAEL_CONFLICT_EWMA_ALPHA")?.toDoubleOrNull() ?: 0.05).coerceIn(0.001, 1.0)
+            val highConflictRate = (env("ARXAEL_HIGH_CONFLICT_RATE")?.toDoubleOrNull() ?: 0.35).coerceIn(0.01, 0.99)
+            val conflictDecayTauS = maxOf(0.0, env("ARXAEL_CONFLICT_DECAY_TAU_S")?.toDoubleOrNull() ?: 0.0)
+            val optimisticWedgeGuard = env("ARXAEL_OPTIMISTIC_WEDGE_GUARD")?.trim()?.lowercase() !in setOf("0","false","no") // default ON: free correctness guard (innocent-PR protection on a wedged main), throughput-neutral, helps auto stay robust across edge cases
+            val loadAwareRouting = env("ARXAEL_LOAD_AWARE_ROUTING")?.trim()?.lowercase() in setOf("1","true","yes")
+            val loadAwareFraction = (env("ARXAEL_LOAD_AWARE_FRACTION")?.toDoubleOrNull() ?: 1.0).coerceIn(0.01, 1.0)
+            val revertHealthGuard = env("ARXAEL_REVERT_HEALTH_GUARD")?.trim()?.lowercase() in setOf("1","true","yes")
+            val revertHealthCooldownMs = maxOf(0L, env("ARXAEL_REVERT_HEALTH_COOLDOWN_MS")?.toLongOrNull() ?: 30_000L)
+            // SHIP v1.0.3: balanced (=auto) is now SELF-TUNING by default — gate-fill load-adaptive routing (H18) with
+            // the valley fix (H19 hysteresis) and the batchCap/tiny-pool fix (H23). conservative/fast keep their static
+            // thresholds (gateFillRouting stays false for them). Explicit env still overrides either way.
+            val gffEnv = env("ARXAEL_GATE_FILL_ROUTING")?.trim()?.lowercase()
+            val gateFillRouting = if (gffEnv != null) gffEnv in setOf("1","true","yes") else (mergeMode == "balanced")
+            val gateFillFrac = (env("ARXAEL_GATE_FILL_FRAC")?.toDoubleOrNull() ?: 1.0).coerceIn(0.05, 8.0)
+            val ghEnv = env("ARXAEL_GATE_FILL_HYSTERESIS")?.trim()?.lowercase()
+            val gateFillHysteresis = if (ghEnv != null) ghEnv in setOf("1","true","yes") else (mergeMode == "balanced")
+            val bcaEnv = env("ARXAEL_BATCHCAP_AWARE")?.trim()?.lowercase()
+            val batchCapAware = if (bcaEnv != null) bcaEnv in setOf("1","true","yes") else (mergeMode == "balanced")
+            val batchCapDominanceFactor = (env("ARXAEL_BATCHCAP_DOMINANCE_FACTOR")?.toDoubleOrNull() ?: 2.0).coerceIn(0.5, 16.0)
+            val banditRouting = env("ARXAEL_BANDIT_ROUTING")?.trim()?.lowercase() in setOf("1","true","yes")
+            val banditWindowMs = maxOf(1000L, env("ARXAEL_BANDIT_WINDOW_MS")?.toLongOrNull() ?: 12_000L)
+            val banditExploreEvery = maxOf(0, env("ARXAEL_BANDIT_EXPLORE_EVERY")?.toIntOrNull() ?: 4)
+            val banditAlpha = (env("ARXAEL_BANDIT_ALPHA")?.toDoubleOrNull() ?: 0.5).coerceIn(0.01, 1.0)
+            val governorGoodputSignal = env("ARXAEL_GOVERNOR_GOODPUT")?.trim()?.lowercase() !in setOf("0", "false", "no")
+            val optimisticConfirmations = maxOf(0, env("ARXAEL_OPTIMISTIC_CONFIRMATIONS")?.toIntOrNull()
+                ?: when (mergeMode) { "fast" -> 0; else -> 2 })
             val roDepCachePinned = env("ARXAEL_RO_DEP_CACHE")
             val mergeBatchCap = maxOf(1, env("ARXAEL_MERGE_BATCH_CAP")?.toIntOrNull() ?: 16)
             val acquireTimeoutMultiplier = maxOf(1, env("ARXAEL_ACQUIRE_TIMEOUT_MULT")?.toIntOrNull() ?: 4)
@@ -302,6 +438,32 @@ data class BoxConfig(
                 buildRunCapMs = buildRunCapMs,
                 budgetPct = budgetPct,
                 optimisticConfirmations = optimisticConfirmations,
+                mergeMode = mergeMode,
+                routeThreshold = routeThreshold,
+                noAuth = noAuth,
+                gateBackpressure = gateBackpressure,
+                maxVerifyLagMs = maxVerifyLagMs,
+                conflictAdaptiveRouting = conflictAdaptiveRouting,
+                conflictOptimisticThreshold = conflictOptimisticThreshold,
+                conflictEwmaAlpha = conflictEwmaAlpha,
+                highConflictRate = highConflictRate,
+                conflictDecayTauS = conflictDecayTauS,
+                optimisticWedgeGuard = optimisticWedgeGuard,
+                loadAwareRouting = loadAwareRouting,
+                loadAwareFraction = loadAwareFraction,
+                revertHealthGuard = revertHealthGuard,
+                revertHealthCooldownMs = revertHealthCooldownMs,
+                gateFillRouting = gateFillRouting,
+                gateFillFrac = gateFillFrac,
+                gateFillHysteresis = gateFillHysteresis,
+                batchCapAware = batchCapAware,
+                batchCapDominanceFactor = batchCapDominanceFactor,
+                banditRouting = banditRouting,
+                banditWindowMs = banditWindowMs,
+                banditExploreEvery = banditExploreEvery,
+                banditAlpha = banditAlpha,
+                disjointBatch = disjointBatch,
+                governorGoodputSignal = governorGoodputSignal,
                 roDepCachePinned = roDepCachePinned,
                 mergeBatchCap = mergeBatchCap,
             )

@@ -24,12 +24,15 @@ regression in an undiscovered dependent can slip onto `main` and not be caught b
   with **no** Gradle edge at all) between modules the graph *does* know about. Still bounded by branch-gating
   and by the next PR's gate re-testing the module.
 - **Mitigation (in place — hardened):** `ModuleGraphProbe` discovers from the build itself (all configs'
-  `ProjectDependency` edges) **and now the full subproject set**. The router is **fail-safe**: it routes a PR
-  OPTIMISTIC only when the module is a *known* node AND its closure is small; an unknown module — or a
-  wholly-failed discovery (empty set) — routes **BATCHED** (the sound full gate), so a missing/incomplete
-  graph can no longer silently send a change down the narrow-gate fast path. The batched path never lands
-  red; auto-route already sends large-closure PRs there; lowering `MergeRouter.threshold` widens the sound
-  set further (threshold 1 ⇒ only truly-independent modules take the fast path).
+  `ProjectDependency` edges) **and now the full subproject set**. The router is **fail-safe**: a PR is
+  eligible for the OPTIMISTIC fast path only when the module is a *known* node AND its closure is within the
+  threshold BOUND (under the default self-tuning `balanced` mode, live load then decides optimistic-vs-batched
+  within that bound); an unknown module — or a wholly-failed discovery (empty set) — routes **BATCHED** (the
+  sound full gate), so a missing/incomplete graph can no longer silently send a change down the narrow-gate
+  fast path. The batched path never lands red; large-closure PRs go there; lowering `MergeRouter.threshold`
+  widens the sound set further (threshold 1 ⇒ only truly-independent modules are even eligible for the fast
+  path). Setting `ARXAEL_MERGE_MODE=conservative` removes the optimistic path entirely (everything batched) —
+  the strongest mitigation for this exact limitation.
 - **Residual now empirically covered (verify-then-trust):** a module's first `ARXAEL_OPTIMISTIC_CONFIRMATIONS`
   (default 2) optimistic changes are gated against the **FULL project**, which runs *every* module's tests and
   so catches a break in any module — declared dependent or not (reflection/resource/runtime coupling
@@ -52,7 +55,7 @@ across hosts.
 
 - **Severity:** Medium — it's a real ceiling, but largely by design.
 - **Mitigation (in place):** crash-durable queue + re-gate-on-recovery (a crash cannot leave an unverified
-  change silently on `main`; validated live by `bench/chaos_recovery.py`); bounded/fail-closed executor so
+  change silently on `main`; validated live under fault injection); bounded/fail-closed executor so
   the one box degrades gracefully rather than wedging. **Supervised self-healing** (`scripts/install-service.sh`):
   installs a systemd unit (`Restart=always`) + a 30s liveness timer, so a **crash** *or* a **wedge** auto-
   restarts the daemon — and because restart triggers `PrJournal` recovery, the service heals to a sound `main`
@@ -104,16 +107,32 @@ That is the entire security boundary. Critically:
   not for security. A buggy or hostile agent shares the same box, the same executor, the same `main`,
   and the same git repo as everyone else — its blast radius is real (it can submit branches, consume the
   whole bound, or land changes).
-- **There is no auth and no tenancy.** Any local process that can reach the loopback port is an agent.
-  There is no per-agent identity check, quota, or access control on the merge surface.
+- **A local token gates writes, but there's still no real tenancy.** Mutating endpoints require a local token
+  (header `X-Arxael-Token`, from `~/.arxael/token`; `ARXAEL_NO_AUTH=true` disables it). It stops casual local
+  tools and drive-by web pages (a page can POST to `127.0.0.1` without CORS preflight, but can't set a custom
+  header or read the token file). It is **not** per-agent identity, quota, or isolation: any process that can
+  read the token file is an agent.
 
 - **Severity:** High **if** the trust assumption is violated. Within the intended model (your own box, your
   own agents) it's acceptable; outside it, it is not a multi-tenant or untrusted-workload system.
-- **Mitigation (in place):** loopback binding (no network exposure), fail-closed arg allowlist, bounded
-  executor (one agent can't unbound-ly exhaust the box — it queues / gets `OVERLOADED`).
-- **What would close it:** per-agent auth + quotas, and real build sandboxing/isolation (containers, user
+- **Mitigation (in place):** loopback binding (no network exposure), a local API token on mutating endpoints,
+  fail-closed arg allowlist, bounded executor (one agent can't unbound-ly exhaust the box — it queues / gets
+  `OVERLOADED`).
+- **What would close it:** *per-agent* auth + quotas, and real build sandboxing/isolation (containers, user
   namespaces, seccomp) between agents — explicitly out of scope today. **Do not expose the port beyond
   loopback and do not run untrusted agents against it.**
+
+### When to use arxael (and when not)
+
+| Use it when… | Do **not** use it when… |
+| --- | --- |
+| the agents are **yours** | agents are **untrusted** |
+| the repo/build is **trusted** (tests may run arbitrary project code — by design) | build scripts may be **hostile** |
+| one box, one tenant | **multiple tenants** share the machine |
+| the daemon stays bound to **loopback** | the port is exposed **beyond localhost** |
+
+Cache/worktree separation is for lock-contention and speed — **not** a security boundary. Treat "trusted local
+agents on loopback" as a hard precondition, not a default you can drift away from.
 
 ## 5. Validation is on a synthetic fixture at small scale
 
@@ -128,13 +147,13 @@ dependency graphs, and many agents sustained over hours.
 - **Mitigation (in place):** the design's soundness rests on branch-gating + the batched fallback, which
   don't depend on scale; the adaptive governor is built precisely to self-correct as builds grow heavier
   (the answer to "what happens as the project grows"). Every striking result was re-tested before being
-  trusted (see ARCHITECTURE.md). **Now also validated in an ISOLATED CONTAINER**
-  (`bench/realworld_container.sh`): a clean `gradle:8.10.2-jdk21` container with the kit **built from source
+  trusted (see ARCHITECTURE.md). **Now also validated in an ISOLATED CONTAINER:**
+  a clean `gradle:8.10.2-jdk21` container with the kit **built from source
   inside it**, a real 8-module project (240 classes, real JUnit5/pitest/JaCoCo deps), 8 agents landing PRs on
   **fresh per-worktree gradle homes doing real Maven Central downloads** — 29 landed, 13.7 merges/min, **0
   reverts, 0 errors, 0 Maven 429s**, main never broke. So it's no longer only "this pre-warmed box": the
   shipped defaults survive a from-scratch build + real cold downloads + real concurrency in isolation.
-  **And against a REAL OSS project** (`bench/realworld_oss.sh`): 16 agents adding real compiling tests to
+  **And against a REAL OSS project:** 16 agents adding real compiling tests to
   **google/gson** in an isolated container, each PR gated by gson's OWN Maven suite (`mvn -q -pl gson -am
   test`, ProGuard + full Surefire real build) through the real MergeOrchestrator. Result (16 closed-loop
   agents, fully drained): **48/48 good PRs landed, 2/2 bad PRs caught, 0 reverts, 0 daemon errors, 0 client

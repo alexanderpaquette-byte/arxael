@@ -23,6 +23,19 @@ It's the first thing to ask of anything that lands code automatically. **Every P
 
 Proven on a real OSS repo — google/gson, gated by gson's own Maven suite through the real merge orchestrator: **48/48 good PRs landed, 2/2 bad PRs caught, 0 reverts, 0 errors, `main` stayed green** (and ben-manes/caffeine via its own Gradle wrapper: 41/41 good, 2/2 bad, 0 reverts). Method + the trust model are in [docs/LIMITATIONS.md](docs/LIMITATIONS.md).
 
+## Install & requirements
+
+```bash
+npm install -g arxael      # the launcher (or `bash scripts/bootstrap.sh` to build from source)
+arxael up                  # in your repo — auto-detects your test gate, starts the daemon
+```
+
+- **Platform: Linux and macOS.** Native **Windows is not supported — use WSL2** (the daemon runs fine under WSL).
+- **Java 21+ is required** — the engine is a JVM service. If it's missing, `arxael up` prints the exact install command for your OS and stops (it won't half-start).
+- **Gradle is optional** — needed only to *build from source* or to gate *Gradle* projects. Python/Rust/Node/Go users run gradle-free.
+- **How `npm install` works:** the package is a thin **launcher**; on first run it fetches the ~5 MB JVM **engine** from the latest GitHub release (sha256-verified, cached in `~/.arxael`), **auto-tracking the latest release**. Pin one with `ARXAEL_ENGINE_VERSION=x.y.z`; install offline from a local `ARXAEL_CORE_TARBALL=/path/to/arxael-core-*.tar.gz`; `arxael upgrade` pulls a newer engine. Details in [cli/README.md](cli/README.md).
+- **Control the merge risk posture** with `ARXAEL_MERGE_MODE=conservative|balanced|fast`. `balanced` (the default) is **self-tuning**: it batches PRs at low load to amortize one gate over many, goes optimistic (parallel async gates) at high load, and self-scales to the box's gate-pool — beating any fixed batch-vs-optimistic choice. `conservative` gates everything before it lands (max safety, never an async revert); `fast` leans optimistic.
+
 ## The problem
 
 Run many AI coding agents in parallel and each one kicks builds/tests. Two things break at scale:
@@ -39,7 +52,7 @@ The differentiator is **density, not speed**: a single build runs at the toolcha
 - **Works with your language.** Zero-config adapters for **gradle, gradlew, maven, pytest, cargo, go, vitest, npm, make**, plus a generic **exec** — an agent just names it.
 - **Sizes itself to your box.** Learns each build's memory footprint and tunes concurrency up/down on its own — no knobs to set (adaptive auto-sizing).
 - **Only re-tests what changed.** Skips doc-only edits and scopes tests to the modules a change actually touched (change-aware scoping).
-- **Fast, conflict-free merges.** Auto-routes each change (land-now-verify-async for small, gate-then-land for big) and, on a red batch, blames the right change instead of bouncing everyone (auto-route + culprit attribution).
+- **Fast, conflict-free merges.** Self-tunes routing to the box's live load — lands optimistically when there's enough pending work to fill the async gate pool, batches when there isn't (adapting to the box, not a fixed rule) — and, on a red batch, blames the right change instead of bouncing everyone (load-adaptive routing + culprit attribution).
 - **Landings never wait behind branch-tests.** A reserved high-priority lane keeps merges flowing under a flood of agent test runs.
 - **Survives crashes.** A journal re-checks any in-flight change after a restart, so a crash never leaves a broken or unverified change on `main` (crash recovery).
 - **Self-healing on one box.** Runs as a supervised service that auto-restarts on crash *and* on hang, and reaps leaked build daemons (systemd unit + liveness watchdog).
@@ -79,8 +92,7 @@ The daemon exposes **native Prometheus metrics** at `GET /metrics` (no exporter,
 
 **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** is the authoritative "how everything works" reference —
 every component, the request flows (build, merge, adaptive sizing, recovery), the HTTP API, and the safety
-invariants. Configure it via [docs/SETUP.md](docs/SETUP.md); the *why* (experiments + numbers) is in
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); the visual map is [docs/OVERVIEW.md](docs/OVERVIEW.md). What it
+invariants. Configure it via [docs/SETUP.md](docs/SETUP.md); the visual map is [docs/OVERVIEW.md](docs/OVERVIEW.md). What it
 deliberately does **not** do — and the trust model it assumes — is in
 [docs/LIMITATIONS.md](docs/LIMITATIONS.md).
 

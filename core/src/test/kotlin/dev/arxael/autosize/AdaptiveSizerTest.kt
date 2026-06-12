@@ -40,6 +40,19 @@ class AdaptiveSizerTest {
     }
 
     @Test
+    fun `H2 does not grow when goodput has stalled even with demand, room, and spare CPU and IO`() {
+        // The goodput-peak case the mem/cpu/io sensors are all blind to: everything reads "fine" (RAM room, CPU/IO
+        // not saturated, work queued) but growing concurrency stopped raising completion rate -> HOLD, don't overshoot.
+        val next = AdaptiveSizer.nextTarget(8, caps, memAvailMb = 50_000, headroomMb = 2000, perBuildMb = 1500,
+            waiting = 5, cpuSaturated = false, ioSaturated = false, goodputStalled = true)
+        assertEquals(8, next, "goodput-stall blocks the grow the other sensors would have allowed")
+        // sanity: the SAME inputs WITHOUT the stall do grow (proves the stall is the only thing holding it)
+        val grows = AdaptiveSizer.nextTarget(8, caps, memAvailMb = 50_000, headroomMb = 2000, perBuildMb = 1500,
+            waiting = 5, cpuSaturated = false, ioSaturated = false, goodputStalled = false)
+        assertEquals(9, grows)
+    }
+
+    @Test
     fun `does not grow without demand`() {
         val next = AdaptiveSizer.nextTarget(8, caps, memAvailMb = 12_000, headroomMb = 2000, perBuildMb = 1500, waiting = 0, cpuSaturated = false)
         assertEquals(8, next)

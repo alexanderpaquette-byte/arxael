@@ -4,6 +4,12 @@ The daemon exposes its live state as Prometheus metrics **natively** — no expo
 dependency. `GET /metrics` on the loopback port renders the same snapshots you see on `/health` and
 `/merge/status` in the text exposition format.
 
+> **Docker is optional.** The only hard requirement is *something that scrapes `127.0.0.1:<port>/metrics`*.
+> The one-command stack ("One command (Docker)" below) uses Docker for convenience; on a host where Docker can't start (a locked-down VM,
+> an AWS WorkSpace, anything without nested virtualization) use the **native path** ("Scrape it" + "Visualize it" below) instead — a
+> locally-installed Prometheus (point it at `ops/prometheus.yml`) plus Grafana (import
+> `ops/grafana-dashboard.json`) scrape the very same loopback endpoint, no containers needed.
+
 ## 0. One command (Docker) — stand it up + watch it
 
 ```bash
@@ -31,7 +37,7 @@ prometheus --config.file=ops/prometheus.yml
 ```
 
 `ops/prometheus.yml` scrapes `127.0.0.1:8723/metrics` every 5s. The daemon binds **loopback only**
-(trust model), so run Prometheus on the same box, or scrape through an SSH tunnel:
+(trusted-agents model), so run Prometheus on the same box, or scrape through an SSH tunnel:
 `ssh -L 8723:127.0.0.1:8723 <box>`.
 
 ## 2. Visualize it

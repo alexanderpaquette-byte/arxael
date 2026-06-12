@@ -43,6 +43,18 @@ class AdaptiveGovernor(
     internal var memSource: () -> Mem? = { readMem() }
     internal var load1Source: () -> Double? = { readLoad1() }
     internal var ioWaitSource: () -> Double? = { readIoWaitFraction() }
+    internal var completedSource: () -> Long = { executor.completedCount() }
+
+    // H2 goodput-aware saturation signal (hill-climb). The mem/cpu/io sensors are all blind at the goodput peak,
+    // so we measure the COMPLETION RATE: after a grow, if goodput didn't improve, cap growth there (soft ceiling)
+    // and ease back to the proven level. Re-probed periodically so a changed workload can re-explore.
+    @Volatile private var prevCompleted: Long = -1L
+    @Volatile private var goodputEwma: Double = -1.0  // smoothed completions/tick; -1 = not seeded yet
+    private var probingFromC: Int = -1                // the C we grew FROM and are now evaluating; -1 = not probing
+    private var goodputBeforeGrow: Double = 0.0
+    private var settleTicks: Int = 0
+    @Volatile private var softCeiling: Int = Int.MAX_VALUE // learned no-grow ceiling (the proven peak)
+    private var reprobeTicks: Int = 0
 
     fun start() {
         if (!config.adaptive || running) return
@@ -96,10 +108,32 @@ class AdaptiveGovernor(
         lastIoWaitPct = ioWait?.let { it * 100.0 } ?: -1.0
         val cpuSaturated = load1?.let { it > config.cores } ?: false
         val ioSaturated = ioWait != null && ioWait > 0.5 // disk ~half-blocked = IO-bound
-        val target = AdaptiveSizer.nextTarget(
+
+        // --- H2 goodput hill-climb: measure the completion rate; learn the soft ceiling at the goodput peak. ---
+        val completed = completedSource()
+        val gpTick = if (prevCompleted < 0) -1.0 else (completed - prevCompleted).toDouble().coerceAtLeast(0.0)
+        prevCompleted = completed
+        if (gpTick >= 0) goodputEwma = if (goodputEwma < 0) gpTick else GOODPUT_ALPHA * gpTick + (1 - GOODPUT_ALPHA) * goodputEwma
+        if (++reprobeTicks >= REPROBE_TICKS) { softCeiling = Int.MAX_VALUE; reprobeTicks = 0 } // periodically re-explore
+        // Evaluate a pending grow once it has had time to fill + complete builds: did goodput actually rise?
+        if (probingFromC in 0 until current && goodputEwma >= 0 && ++settleTicks >= SETTLE_TICKS) {
+            if (goodputEwma <= goodputBeforeGrow * IMPROVE_RATIO) softCeiling = probingFromC // the grow past here didn't pay
+            probingFromC = -1; settleTicks = 0
+        }
+        val goodputStalled = config.governorGoodputSignal && current >= softCeiling
+
+        var target = AdaptiveSizer.nextTarget(
             current, caps, mem.availMb, config.ramHeadroomMb, footprintMb,
-            executor.waitingCount(), cpuSaturated, ioSaturated,
+            executor.waitingCount(), cpuSaturated, ioSaturated, goodputStalled,
         )
+        // Ease back to the proven peak if we'd grown above the learned ceiling (the extra slot didn't add goodput).
+        if (config.governorGoodputSignal && current > softCeiling && target >= current) target = current - 1
+        when {
+            target > current -> { probingFromC = current; goodputBeforeGrow = goodputEwma.coerceAtLeast(0.0); settleTicks = 0 }
+            // A RAM-FORCED shrink means conditions changed -> forget the learned ceiling and re-explore.
+            target < current && mem.availMb < config.ramHeadroomMb -> { softCeiling = Int.MAX_VALUE; probingFromC = -1 }
+        }
+
         if (target != current) {
             executor.setConcurrencyTarget(target)
             applyWorkers(target)
@@ -107,7 +141,8 @@ class AdaptiveGovernor(
                 "governor_resize",
                 mapOf("from" to current, "to" to target, "workers" to config.liveBuildWorkers.get(),
                     "memAvailMb" to mem.availMb, "footprintMb" to footprintMb,
-                    "waiting" to executor.waitingCount(), "cpuSaturated" to cpuSaturated, "ioSaturated" to ioSaturated),
+                    "waiting" to executor.waitingCount(), "cpuSaturated" to cpuSaturated, "ioSaturated" to ioSaturated,
+                    "goodput" to goodputEwma, "softCeiling" to (if (softCeiling == Int.MAX_VALUE) -1 else softCeiling)),
             )
         }
     }
@@ -154,6 +189,14 @@ class AdaptiveGovernor(
     }
 
     internal companion object {
+        // H2 hill-climb tuning. SETTLE_TICKS: ticks to wait after a grow before judging goodput (the new slot must
+        // fill + complete a build; at ~3s/tick this is ~15s, covering typical builds). IMPROVE_RATIO: goodput must
+        // rise >5% to count the grow as paying. REPROBE_TICKS: forget the learned ceiling every ~2min to re-explore.
+        private const val GOODPUT_ALPHA = 0.4
+        private const val SETTLE_TICKS = 5
+        private const val IMPROVE_RATIO = 1.05
+        private const val REPROBE_TICKS = 40
+
         /** Parse /proc/meminfo lines -> (totalMb, availMb), or null if either is missing. Pure. */
         fun parseMeminfo(lines: List<String>): Mem? {
             fun kb(key: String) = lines.firstOrNull { it.startsWith(key) }

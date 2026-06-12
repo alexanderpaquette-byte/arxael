@@ -3,6 +3,23 @@
 All notable changes to Arxael. Versions follow [SemVer](https://semver.org/) (pre-1.0: minor =
 notable change, patch = fix).
 
+## [1.1.2] — 2026-06-12
+
+Self-tuning merge routing is now the default. `ARXAEL_MERGE_MODE` selects the merge risk posture —
+`conservative` | `balanced` (default) | `fast`:
+- **`balanced` is now load-adaptive** instead of a static cores-derived closure threshold. It layers
+  **gate-fill routing** (land optimistically when pending work fills the async gate pool, else batch),
+  **hysteresis** (sticky regime — no flapping), and **batchCap-awareness** (force batch when a batch dominates
+  the gate pool) on top of the dependency-closure bound. It batches at low load to amortize one gate over many
+  PRs, goes optimistic at high load, and self-scales to the box's gate pool — beating any fixed
+  batch-vs-optimistic choice.
+- New override env vars, all default-on under `balanced`: `ARXAEL_GATE_FILL_ROUTING`,
+  `ARXAEL_GATE_FILL_HYSTERESIS`, `ARXAEL_BATCHCAP_AWARE`, and `ARXAEL_BATCHCAP_DOMINANCE_FACTOR` (default 2.0).
+- Dependency-closure size still **bounds** optimistic eligibility (soundness unchanged); load decides
+  batch-vs-optimistic within that bound.
+- `conservative` (everything batched, never an async revert) is the strongest safety posture; `fast` leans
+  optimistic.
+
 ## [1.1.1] — 2026-06-10
 
 Fix (no breaking changes).

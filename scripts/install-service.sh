@@ -4,7 +4,7 @@
 # This is the right-sized HA for the "one box you own" thesis (LIMITATIONS #2). It does NOT add a second
 # machine; it makes the single box self-healing:
 #   - crash  -> systemd restarts the daemon; its PrJournal re-enqueues + re-gates unfinished PRs on startup
-#               (so a crash never leaves an unverified change on main — validated by bench/chaos_recovery.py).
+#               (so a crash never leaves an unverified change on main — validated by crash/fault-injection testing).
 #   - wedge  -> a liveness timer curls /health every 30s and restarts the daemon if it stops answering
 #               (covers a hung process that systemd's process-alive check would miss).
 #
@@ -60,7 +60,9 @@ RestartSec=2
 # to 60s to drain (a bit over the orchestrator's 30s gate-drain) before SIGKILL, instead of systemd's 90s
 # default. Either way ExecStopPost still runs afterward, so daemons are reaped even on a hard kill.
 TimeoutStopSec=60
-# clean up this daemon's gradle build-daemons on stop (scoped to homes under its state dir)
+# on stop, reap ALL arxael + gradle JVMs on this host (NOT scoped to this state dir — reap-daemons.sh matches by
+# JVM main class). Safe under the single-box/single-service model; on a shared host it would also reap other arxael
+# or unrelated gradle daemons. Self-kill-safe (jps/PID-based, never pattern-matches the reaper itself).
 ExecStopPost=$REPO/scripts/reap-daemons.sh
 
 [Install]

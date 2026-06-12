@@ -40,8 +40,8 @@ autosize/
   AdaptiveGovernor.kt           samples /proc, learns footprint, drives executor.setConcurrencyTarget + live workers
 merge/
   MergeService.kt               project lifecycle: attach worktrees, discover graph, warm dep cache, run/teardown orchestrator
-  MergeOrchestrator.kt          the queue: auto-route -> optimistic land + async gate / batched gate-then-land; durable
-  MergeRouter.kt                routes a PR by its dependency-closure size (optimistic vs batched), generic over module id
+  MergeOrchestrator.kt          the queue: load-adaptive routing -> optimistic land + async gate / batched gate-then-land; durable
+  MergeRouter.kt                routes each PR by live load (gate-fill + hysteresis + batchCap-awareness), bounded by dependency-closure size; generic over module id
   MergeGate.kt                  the gate SPI (test a worktree, optionally module-scoped) + PullRequest/GateResult
   ExecutorMergeGate.kt          production gate: runs tests on the WarmExecutor (reserved high lane) + CulpritAttribution
   CulpritAttribution.kt         pure: parse a build's failed modules -> name the culprit PR
@@ -76,15 +76,21 @@ whole point); build duration feeds `DurationTracker`.
 bare repo; **auto-discover** the module graph (`ModuleGraphProbe`) unless given; if per-worktree homes are
 on, **warm** the shared RO dep cache (`DepCacheWarmer`); start the `MergeOrchestrator` and `recover()` any
 journaled-but-unfinished PRs. Then agents `submit` branch-tested PRs. The orchestrator's loop drains the
-queue and, per PR, `MergeRouter` chooses:
-- **small dependency-closure → OPTIMISTIC:** merge onto `main` and land **immediately**, then verify async on
-  a gate worktree testing **only that PR's module** (`module-scoped` → a bad PR can poison at most its own
+queue and, per PR, `MergeRouter` chooses **load-adaptively** (the default `balanced` mode), bounded by the
+PR's dependency-closure:
+- **OPTIMISTIC** when the gate pool has room to fill — pending work (`queueDepth + inFlightGates`) is filling
+  the async gate pool — or the closure is small: merge onto `main` and land **immediately**, then verify async
+  on a gate worktree testing **only that PR's module** (`module-scoped` → a bad PR can poison at most its own
   gate, never others' → no cascade). A red gate **auto-reverts** the commit from `main`.
-- **large closure (hub/deep chain) → BATCHED gate-then-land:** merge a batch onto a detached `main`, one
-  incremental integration test, land all if green; on a red batch, `CulpritAttribution` bounces only the
-  culprit PR(s) and re-tests the remainder. **Never lands a red merge.**
-Gate tests run via `ExecutorMergeGate` on the executor's **reserved high-priority lane** so landings never
-starve behind agent branch-tests. Soundness rests on PRs arriving branch-tested green (the agent's job).
+- **BATCHED gate-then-land** when load is low, or a batch would dominate the gate pool, or the closure is
+  large (hub/deep chain): merge a batch onto a detached `main`, one incremental integration test, land all if
+  green; on a red batch, `CulpritAttribution` bounces only the culprit PR(s) and re-tests the remainder.
+  **Never lands a red merge.**
+Hysteresis keeps the regime sticky (no flapping between optimistic and batched); batchCap-awareness forces
+batch when batch size dominates the pool. `ARXAEL_MERGE_MODE=conservative` pins everything batched, `fast`
+leans optimistic. Gate tests run via `ExecutorMergeGate` on the executor's **reserved high-priority lane** so
+landings never starve behind agent branch-tests. Soundness rests on PRs arriving branch-tested green (the
+agent's job).
 
 ### 4. The adaptive sizing loop (every ~3 s)
 `AdaptiveGovernor.tick`: read free memory + CPU load + `%iowait` from `/proc`; learn the per-build footprint
@@ -145,8 +151,8 @@ Three layers, matched to what each kind of code needs:
   queue against a real git repo with a deterministic fake gate (good PRs land, a dependent-break is reverted,
   batched attributes the culprit, crash-recovery replays, **main never left broken**); `WarmExecutorConcurrencyTest`
   exercises the bounded gate + reserved lane + live resize under threads; `MergeServiceTest` covers register→submit→land.
-- **HTTP surface, `Main`, Gradle Tooling-API adapters → live smoke + bench drivers.** `scripts/smoke.sh`,
-  `bench/merge_http_load.py`, and the `--executor` runs exercise these end-to-end; they're excluded from the
+- **HTTP surface, `Main`, Gradle Tooling-API adapters → live smoke + load drivers.** `scripts/smoke.sh`
+  and the `--executor` runs exercise these end-to-end; they're excluded from the
   mutation scope (a mutation score over loopback-I/O / process-wiring / a real toolchain is misleading), as
   is generated serializer code.
 - **Deliberately accepted:** surviving mutants are predominantly removals of git/filesystem *side-effect*
@@ -156,8 +162,10 @@ Three layers, matched to what each kind of code needs:
 
 ## Configuration
 All `ARXAEL_*` env, every value box-derived by default; the budget dial (`ARXAEL_BUDGET_PCT`) and exact caps
-(`ARXAEL_CORES` / `ARXAEL_USABLE_RAM_MB` / `ARXAEL_MAX_CONCURRENT`) let it share a box. Full table +
-the auto-sizing explanation: [SETUP.md](SETUP.md).
+(`ARXAEL_CORES` / `ARXAEL_USABLE_RAM_MB` / `ARXAEL_MAX_CONCURRENT`) let it share a box.
+`ARXAEL_MERGE_MODE` (`conservative|balanced|fast`, default `balanced` = self-tuning) picks the merge risk
+posture; the gate-fill / hysteresis / batchCap override knobs + the full table are in [SETUP.md](SETUP.md).
+Full table + the auto-sizing explanation: [SETUP.md](SETUP.md).
 
 ## Where everything is documented
 - **Run it:** [../QUICKSTART.md](../QUICKSTART.md) (fresh box) · [../AGENTS.md](../AGENTS.md) (agents) · `scripts/arxael` (daily)

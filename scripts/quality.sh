@@ -3,7 +3,7 @@
 # security scan (Trivy). Run from repo root. Prints a one-screen summary.
 set -uo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$REPO"
+cd "$REPO" || { echo "cannot cd to repo root $REPO" >&2; exit 1; }
 
 echo "== tests + coverage =="
 ./gradlew :core:test :core:jacocoTestReport --console=plain -q

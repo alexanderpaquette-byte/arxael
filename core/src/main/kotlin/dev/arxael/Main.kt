@@ -20,6 +20,20 @@ import java.util.concurrent.CountDownLatch
  * /invoke surface. The whole agent fleet routes through this — instead of each agent cold-starting
  * its own build daemon in its own sandbox.
  */
+
+/** Local API token: reuse it if present (a restart keeps the same token so live agents keep working), else
+ *  generate a 256-bit hex token written 0600. Callers send it as header X-Arxael-Token (see InvokeServer). */
+private fun ensureLocalToken(path: java.nio.file.Path): String {
+    val existing = runCatching { Files.readString(path).trim() }.getOrNull()
+    if (!existing.isNullOrEmpty()) return existing
+    val tok = ByteArray(32).also { java.security.SecureRandom().nextBytes(it) }.joinToString("") { "%02x".format(it) }
+    runCatching {
+        Files.writeString(path, "$tok\n")
+        Files.setPosixFilePermissions(path, java.nio.file.attribute.PosixFilePermissions.fromString("rw-------"))
+    }
+    return tok
+}
+
 fun main() {
     // Bound slow/partial REQUEST bodies (slow-loris): the JDK HttpServer reaps an exchange whose request isn't
     // fully received within maxReqTime seconds, freeing the worker thread — else a stalled caller parks a
@@ -30,6 +44,11 @@ fun main() {
     System.setProperty("sun.net.httpserver.maxReqTime", "60")
     val config = BoxConfig.fromEnv()
     Files.createDirectories(config.stateDir)
+    // Local API token. Any local process (or a drive-by web page POSTing to 127.0.0.1 without CORS preflight)
+    // can otherwise hit mutating endpoints — /shutdown, /invoke, /merge/*. Requiring header X-Arxael-Token
+    // (which a web page can't set without a preflight the daemon won't answer, nor read from ~/.arxael/token)
+    // raises that floor. It does NOT make arxael multi-tenant/safe against malicious agents. ARXAEL_NO_AUTH off.
+    val authToken: String? = if (config.noAuth) null else ensureLocalToken(config.stateDir.resolve("token"))
     val events = EventLog(config.stateDir.resolve("events.jsonl"))
 
     val startEpoch = System.currentTimeMillis()
@@ -82,7 +101,8 @@ fun main() {
         }
     }
 
-    server = InvokeServer(config, executor, events, onShutdown = shutdown, merge = merge, governor = governor)
+    server = InvokeServer(config, executor, events, onShutdown = shutdown, merge = merge, governor = governor, authToken = authToken)
+    if (authToken != null) System.err.println("[arxael] API token required (header X-Arxael-Token); clients read ${config.stateDir.resolve("token")} — set ARXAEL_NO_AUTH=true to disable")
     try {
         server.start()
     } catch (e: java.io.IOException) {

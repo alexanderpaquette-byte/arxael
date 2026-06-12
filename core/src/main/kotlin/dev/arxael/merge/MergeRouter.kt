@@ -2,7 +2,7 @@ package dev.arxael.merge
 
 /**
  * The routing brain of the auto-route merge strategy (validated in
- * `bench/merge_sim.py`, incl. the phase-5 wide-DAG runs).
+ * `a merge simulator`, incl. the phase-5 wide-DAG runs).
  *
  * Pure decision logic, deliberately separated from all git / async / executor machinery so it is
  * unit- and mutation-testable on its own. The full orchestrator (merge queue, optimistic land +
@@ -55,9 +55,13 @@ class MergeRouter<M>(
 
     /** Route a PR: OPTIMISTIC only with positive knowledge (module is known AND its closure is small);
      *  otherwise BATCHED (sound). An unknown module, or a wholly-unknown graph, never takes the fast path. */
-    fun route(module: M): MergeRoute {
+    fun route(module: M): MergeRoute = routeWith(module, threshold)
+
+    /** Route with a caller-supplied threshold instead of the static one — lets the orchestrator drive a DYNAMIC
+     *  threshold (H7: conflict-adaptive routing). Same positive-knowledge rule; only the size cutoff varies. */
+    fun routeWith(module: M, thr: Int): MergeRoute {
         val known = knownModules == null || module in knownModules
-        return if (known && affectedClosure(module).size <= threshold) MergeRoute.OPTIMISTIC else MergeRoute.BATCHED
+        return if (known && affectedClosure(module).size <= thr) MergeRoute.OPTIMISTIC else MergeRoute.BATCHED
     }
 
     companion object {

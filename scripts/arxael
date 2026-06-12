@@ -54,8 +54,9 @@ detect_gate_adapter() {
 core_bin() { echo "${ARXAEL_CORE_BIN:-$HERE/core/build/install/core/bin/core}"; }
 port() { cat "$PORT_FILE" 2>/dev/null || echo 8723; }
 is_running() { local p; p="$(cat "$PID_FILE" 2>/dev/null)"; [ -n "$p" ] && kill -0 "$p" 2>/dev/null; }
-api() { curl -fsS -m "${2:-10}" "http://127.0.0.1:$(port)$1"; }              # GET
-post() { curl -fsS -m "${3:-120}" -X POST "http://127.0.0.1:$(port)$1" -H 'Content-Type: application/json' -d "$2"; }
+tok() { cat "$STATE/token" 2>/dev/null; }                                     # local API token (empty if auth off)
+api() { curl -fsS -m "${2:-10}" "http://127.0.0.1:$(port)$1"; }              # GET (read endpoints are open)
+post() { curl -fsS -m "${3:-120}" -X POST "http://127.0.0.1:$(port)$1" -H 'Content-Type: application/json' -H "X-Arxael-Token: $(tok)" -d "$2"; }
 jqv() { command -v jq >/dev/null 2>&1 && jq -r "$1" 2>/dev/null || sed -n 's/.*"'"$2"'":\([0-9]*\).*/\1/p'; }
 
 # ---------------------------------------------------------------- up: turn it on (+ connect this project)
@@ -179,7 +180,9 @@ connect_current_project() {
       git -C "$hub" update-ref -d refs/arxael/incoming 2>/dev/null || true
     fi
   fi
-  local res; res="$(post /merge/register "{\"repo\":\"$hub\",\"gateWorktrees\":4}" 120 2>/dev/null)"
+  # gateWorktrees:0 => let the daemon size the async-gate pool to the box (cores+RAM, H4 autoGateWorktrees);
+  # set ARXAEL_GATE_WORKTREES to pin a specific count instead.
+  local res; res="$(post /merge/register "{\"repo\":\"$hub\",\"gateWorktrees\":${ARXAEL_GATE_WORKTREES:-0}}" 120 2>/dev/null)"
   if echo "$res" | grep -q '"ok":true'; then
     local mods; mods="$(echo "$res" | jqv '.modules' modules)"
     say "$OK Connected ${B}$name${D}${mods:+ ($mods modules)}. Agents can now submit changes; merged work lands in:"

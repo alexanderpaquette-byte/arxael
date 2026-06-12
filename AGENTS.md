@@ -37,6 +37,11 @@ curl -s http://127.0.0.1:8723/        # returns a JSON card: what it is + every 
 ```
 Trust that card over this file if they ever differ — it's generated from the running code.
 
+**Auth:** mutating POSTs (`/invoke`, `/warmup`, `/merge/register`, `/merge/submit`, `/shutdown`) require the
+local token header `-H "X-Arxael-Token: $(cat ~/.arxael/token)"` — add it to every POST below. Read endpoints
+(`/`, `/health`, `/metrics`, `/merge/status`, `/merge/pr`) are open. (A daemon started with `ARXAEL_NO_AUTH=true`
+needs no token.)
+
 ## Your loop as an agent (the whole contract)
 You work in a git worktree/checkout of the project. **Make your branch in the shared "hub" repo** — the
 simplest way is to create your worktree *off the hub* (the path `arxael up` printed), e.g.
@@ -47,6 +52,7 @@ as state `missing` (not a real conflict). To land a change:
 1. **Test it** on the shared executor (don't run gradle yourself — route it here so the box stays bounded):
    ```bash
    curl -sX POST 127.0.0.1:8723/invoke -H 'Content-Type: application/json' \
+     -H "X-Arxael-Token: $(cat ~/.arxael/token)" \
      -d '{"adapter":"gradle","worktree":"/abs/path/to/your/checkout","tasks":["test"],"agentId":"you"}'
    ```
    Response `status`: `SUCCESS` (green) · `FAILED` (your tests failed — fix and retry) · `OVERLOADED` (box

@@ -102,6 +102,11 @@ class WarmExecutor(
     /** Current adaptive concurrency target. */
     fun concurrencyTarget(): Int = permits.configuredPermits()
 
+    /** Cumulative successful invocations (completed builds/gates) — the GOODPUT counter for the adaptive
+     *  governor's saturation signal (H2): its delta per tick is the completion rate, used to detect when growing
+     *  concurrency stopped raising throughput (the goodput knee the mem/cpu/io sensors are all blind to). */
+    fun completedCount(): Long = invSuccess.get().toLong()
+
     /**
      * Resize the live concurrency bound (the adaptive governor's lever). Keeps the reserved high lane
      * invariant (normal lane = target - reservedHigh). Graceful: in-flight builds are never killed.

@@ -123,9 +123,10 @@ flowchart LR
 **合并进 main**，又快又不冲突，且机器自动调整规模*。深入阅读：[ARCHITECTURE.md](ARCHITECTURE.md)、[SETUP.md](SETUP.md)。
 
 - 🟣 **合并编排器（Merge orchestrator）**（`dev.arxael.merge`，接口 `/merge/{register,submit,status}`）。
-  智能体提交经过分支测试的 PR；编排器把它们无冲突地落到共享的 `main` 上。它按每个 PR 的**依赖闭包大小**
-  （从项目的 Gradle 图自动发现）**自动选路**：闭包小 → **乐观落地 + 模块级异步门禁**，一旦出错就自动回滚
-  （即时、不连锁）；闭包大 → **批量先门禁后落地**，永不弄坏 main，并在某批变红时归因到罪魁 PR。
+  智能体提交经过分支测试的 PR；编排器把它们无冲突地落到共享的 `main` 上。它按**实时负载自适应选路**
+  （依据门禁占用 / gate-fill，带迟滞、并感知 batchCap），并以每个 PR 的**依赖闭包大小**
+  （从项目的 Gradle 图自动发现）限定乐观落地的适用范围：高负载 / 小闭包 → **乐观落地 + 模块级异步门禁**，
+  一旦出错就自动回滚（即时、不连锁）；低负载 / 大闭包 → **批量先门禁后落地**，永不弄坏 main，并在某批变红时归因到罪魁 PR。
   门禁测试跑在执行器**预留的高优先级通道**上，因此落地永远不会被分支测试饿死。
 
 - 🟡 **自适应自动调整规模（Adaptive auto-sizing）**（`dev.arxael.autosize`）。由机器静态推导的上限只是个起点；
@@ -182,13 +183,6 @@ flowchart LR
         quality["quality.sh<br/>覆盖率 · 变异 · trivy"]:::script
     end
 
-    subgraph bench["bench/ （基准测试 + 真实世界验证）"]
-        benchpy["bench.py / run_sweep.sh<br/>密度扫描 (实验组×智能体×核数)"]:::bench
-        mergesim["merge_sim.py<br/>合并策略原型"]:::bench
-        realworld["realworld_oss / caffeine / chaos<br/>真实 OSS + 崩溃恢复验证"]:::bench
-        analyze["analyze.py / sampler.py<br/>崩溃点 + 资源采样"]:::bench
-    end
-
     subgraph fixtures["fixtures/"]
         hello["gradle-hello<br/>冒烟测试夹具 (ARXAEL_SMOKE_OK)"]:::fixture
     end
@@ -202,16 +196,11 @@ flowchart LR
     smoke -->|/invoke| daemon
     smoke --> hello
     quality -->|gradlew test/jacoco/pitest| repo[(:core 构建)]:::service
-    benchpy -->|常驻组: /invoke| daemon
-    benchpy -->|容器组: docker gradle| ctr([每智能体一个容器]):::bad
-    realworld -->|/invoke + /merge| daemon
 
     classDef script fill:#fef3c7,stroke:#d97706,color:#78350f
-    classDef bench fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
     classDef fixture fill:#dcfce7,stroke:#16a34a,color:#14532d
     classDef cfg fill:#f1f5f9,stroke:#475569,color:#0f172a
     classDef service fill:#ede9fe,stroke:#7c3aed,color:#4c1d95,font-weight:bold
-    classDef bad fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
 ```
 
 ## 3. 运行时——整个守护进程（单一进程）
@@ -245,7 +234,7 @@ flowchart TB
         depcache["共享只读依赖缓存<br/>Warmer + Consolidator"]:::artifact
 
         subgraph mergelayer["合并编排器 (dev.arxael.merge)"]
-            router["MergeRouter<br/>按闭包大小自动选路"]:::core
+            router["MergeRouter<br/>按负载自适应选路（闭包大小限定乐观）"]:::core
             orch["MergeOrchestrator<br/>乐观落地+异步回滚 / 批量门禁"]:::core
             journal["PrJournal<br/>崩溃恢复"]:::aux
         end
@@ -281,15 +270,16 @@ flowchart TB
 
 ## 4. 合并工作流（自动选路）
 
-> 两种策略，按每个 PR 的依赖闭包大小自动挑选。乐观落地带来**低延迟**；
+> 两种策略，按**实时负载（门禁占用）自适应**挑选，并以依赖闭包大小限定乐观落地的适用范围。
+> 高负载时倾向乐观落地（**低延迟**）；低负载时倾向批处理（**吞吐**）；
 > 分支门禁 + 模块级验证带来**正确性**（main 永不破）。
 
 ```mermaid
 flowchart TB
-    pr["提交 PR<br/>/merge/submit (分支, 模块)"]:::agent --> router{"MergeRouter：<br/>依赖闭包多大？"}:::gate
+    pr["提交 PR<br/>/merge/submit (分支, 模块)"]:::agent --> router{"MergeRouter：<br/>按负载 + 闭包选路"}:::gate
 
-    router -->|"小 / 独立"| opt["乐观：立刻落地，<br/>异步验证"]:::core
-    router -->|"大 / 深链"| batch["批量：先门禁后落地<br/>（每批一次测试）"]:::core
+    router -->|"负载高 / 小闭包"| opt["乐观：立刻落地，<br/>异步验证"]:::core
+    router -->|"负载低 / 大闭包"| batch["批量：先门禁后落地<br/>（每批一次测试）"]:::core
 
     opt --> ascan{"模块级<br/>异步门禁"}:::gate
     ascan -->|绿| done1["保持落地 ✓<br/>约 0.1s 落地时间"]:::good

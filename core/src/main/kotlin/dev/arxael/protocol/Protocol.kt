@@ -54,7 +54,7 @@ data class InvokeOutcome(
 data class MergeRegisterSpec(
     val repo: String,
     val forwardDeps: Map<String, List<String>> = emptyMap(),
-    val threshold: Int = 4,
+    val threshold: Int = -1,   // <0 = use the daemon's ARXAEL_MERGE_MODE-derived default (config.routeThreshold)
     val gateWorktrees: Int = 4,
 )
 

@@ -43,6 +43,13 @@ class MergeOrchestratorTest {
         gate: MergeGate = this.gate,
         confirmThreshold: Int = 0,
         moduleDirs: Map<String, String> = emptyMap(),
+        gateBackpressure: Boolean = true,
+        gateFillRouting: Boolean = false,
+        gateFillHysteresis: Boolean = false,
+        gateCount: Int = 2,
+        batchCap: Int = 8,
+        batchCapAware: Boolean = false,
+        batchCapDominanceFactor: Double = 2.0,
     ): MergeOrchestrator {
         val seed = tmp.resolve("seed")
         Files.createDirectories(seed)
@@ -56,12 +63,14 @@ class MergeOrchestratorTest {
 
         val integ = tmp.resolve("integ")
         GitOps.git(bare, "worktree", "add", "-q", "--detach", integ.toString(), "main")
-        val gates = (0..1).map { tmp.resolve("gate$it") }
+        val gates = (0 until maxOf(1, gateCount)).map { tmp.resolve("gate$it") }
         gates.forEach { GitOps.git(bare, "worktree", "add", "-q", "--detach", it.toString(), "main") }
 
         val router = MergeRouter(MergeRouter.reverseDeps(forwardDeps), threshold = 4)
-        return MergeOrchestrator(bare, integ, gates, router, gate, events, batchCap = 8, journal = journal,
-            confirmThreshold = confirmThreshold, moduleDirs = moduleDirs).also { orch = it }
+        return MergeOrchestrator(bare, integ, gates, router, gate, events, batchCap = batchCap, journal = journal,
+            confirmThreshold = confirmThreshold, moduleDirs = moduleDirs, gateBackpressure = gateBackpressure,
+            gateFillRouting = gateFillRouting, gateFillHysteresis = gateFillHysteresis,
+            batchCapAware = batchCapAware, batchCapDominanceFactor = batchCapDominanceFactor).also { orch = it }
     }
 
     /** Create a PR branch in the bare repo: edit one module's code.txt to [content]. */
@@ -272,6 +281,50 @@ class MergeOrchestratorTest {
         assertEquals(null, o.prStatus("never-submitted"), "an unknown branch has no record")
     }
 
+    @Test
+    fun `H19 gate-fill hysteresis is sticky - enters at threshold, holds the regime down to half`() {
+        // 8 gates -> gateCapacity 8 -> gateFillThreshold 8, hysteresis low = 8/2 = 4. Dwell band [4, 8).
+        val o = setup(gateFillRouting = true, gateFillHysteresis = true, gateCount = 8)
+        // From BATCH (wasOpt=false): must reach the full threshold to enter optimistic.
+        assertFalse(o.gateFillNowOpt(7, wasOpt = false), "below threshold stays batch")
+        assertTrue(o.gateFillNowOpt(8, wasOpt = false), "at threshold enters optimistic")
+        // From OPTIMISTIC (wasOpt=true): STAY through the dwell band, leave only below the low band.
+        assertTrue(o.gateFillNowOpt(7, wasOpt = true), "in dwell band stays optimistic (no flap)")
+        assertTrue(o.gateFillNowOpt(4, wasOpt = true), "at low band still optimistic")
+        assertFalse(o.gateFillNowOpt(3, wasOpt = true), "below low band drops to batch")
+    }
+
+    @Test
+    fun `H19 hysteresis OFF is byte-for-byte the legacy binary trigger (wasOpt irrelevant)`() {
+        // Flag off -> gateFillLow == gateFillThreshold (8) -> the decision is signal>=8 regardless of prior regime.
+        val o = setup(gateFillRouting = true, gateFillHysteresis = false, gateCount = 8)
+        for (signal in intArrayOf(0, 7, 8, 9, 16)) {
+            assertEquals(
+                o.gateFillNowOpt(signal, wasOpt = false), o.gateFillNowOpt(signal, wasOpt = true),
+                "with hysteresis off the prior regime must NOT change the decision at signal=$signal"
+            )
+            assertEquals(signal >= 8, o.gateFillNowOpt(signal, wasOpt = false), "legacy: opt iff signal>=threshold at $signal")
+        }
+    }
+
+    @Test
+    fun `H23 batchCap-aware forces batch only when batchCap dominates the pool`() {
+        // gateCount=4 -> gateCapacity 4, factor 2 -> dominance boundary at batchCap > 8.
+        assertTrue(setup(gateFillRouting = true, batchCapAware = true, gateCount = 4, batchCap = 16).batchCapDominates(),
+            "batchCap 16 > 2*4 dominates -> force batch")
+        assertFalse(setup(gateFillRouting = true, batchCapAware = true, gateCount = 4, batchCap = 8).batchCapDominates(),
+            "batchCap 8 == 2*4 does NOT dominate (strict >)")
+        assertFalse(setup(gateFillRouting = true, batchCapAware = true, gateCount = 4, batchCap = 4).batchCapDominates(),
+            "batchCap 4 < 2*4 does not dominate -> bare gate-fill")
+    }
+
+    @Test
+    fun `H23 off - batchCapDominates is always false regardless of batchCap (zero behavior change)`() {
+        // Flag off: even an extreme batchCap must not trip the dominance branch -> bare gate-fill path unchanged.
+        assertFalse(setup(gateFillRouting = true, batchCapAware = false, gateCount = 4, batchCap = 128).batchCapDominates())
+        assertFalse(setup(gateFillRouting = true, batchCapAware = false, gateCount = 2, batchCap = 64).batchCapDominates())
+    }
+
     /** Read a module's code.txt at the current bare `main`. */
     private fun mainContent(module: String): String {
         val v = tmp.resolve("verify-${System.nanoTime()}")
@@ -290,7 +343,9 @@ class MergeOrchestratorTest {
 
     @Test
     fun `optimistic path lands good PRs and auto-reverts a bad one without touching the others`() {
-        val o = setup()
+        // Pure optimistic mechanics: opt out of H1c' backpressure so all three take the fast path regardless of the
+        // tiny 2-worktree pool (backpressure-on behavior is covered by the other tests + the bench saturation A/Bs).
+        val o = setup(gateBackpressure = false)
         val good1 = createPr("a1", ":mod1", "mod1 v2 ok")
         val bad = createPr("a2", ":mod2", "BAD change")
         val good3 = createPr("a3", ":mod3", "mod3 v2 ok")
@@ -456,6 +511,127 @@ class MergeOrchestratorTest {
         // recovered PRs carry a submittedAtNanos from the PRIOR process (no epoch across restarts), so their
         // time-to-land is meaningless and must NOT pollute the p50 metric.
         assertEquals(0L, o.snapshot()["p50TimeToLandMs"], "recovered lands are excluded from the time-to-land p50")
+    }
+
+    // ---- H7: conflict-adaptive routing threshold (pure decision) ----
+
+    @Test
+    fun conflictThreshold_warmsUpAsBatchBelowMinSamples() {
+        // Below CONFLICT_MIN_SAMPLES the bounce-rate estimate is too noisy to trust -> always BATCH (0),
+        // even if every observation so far bounced (a 3/3 high rate on 3 samples must not flip to optimistic).
+        assertEquals(0, MergeOrchestrator.conflictThreshold(landed = 0, bounced = 0, optimisticThr = 16))
+        assertEquals(0, MergeOrchestrator.conflictThreshold(landed = 2, bounced = 3, optimisticThr = 16))
+        assertEquals(0, MergeOrchestrator.conflictThreshold(landed = 0, bounced = 19, optimisticThr = 16),
+            "19 samples (<20) stays batch regardless of rate")
+    }
+
+    @Test
+    fun conflictThreshold_lowConflictRoutesBatch() {
+        // Warmed up (>=20 samples) and bounce fraction below HIGH_CONFLICT_RATE (0.35) -> BATCH (0):
+        // the low-conflict regime where amortizing clean PRs per gate wins.
+        assertEquals(0, MergeOrchestrator.conflictThreshold(landed = 100, bounced = 0, optimisticThr = 16))
+        assertEquals(0, MergeOrchestrator.conflictThreshold(landed = 70, bounced = 30, optimisticThr = 16),
+            "0.30 bounce (<0.35) stays batch")
+    }
+
+    @Test
+    fun conflictThreshold_highConflictRoutesOptimistic() {
+        // At/above HIGH_CONFLICT_RATE the batch path de-amortizes (cascade bounces) -> OPTIMISTIC (optimisticThr):
+        // independent lands dodge the within-batch conflict cascade.
+        assertEquals(16, MergeOrchestrator.conflictThreshold(landed = 65, bounced = 35, optimisticThr = 16),
+            "exactly 0.35 is the high-conflict boundary -> optimistic")
+        assertEquals(32, MergeOrchestrator.conflictThreshold(landed = 20, bounced = 80, optimisticThr = 32),
+            "high conflict honors the caller's optimistic threshold")
+    }
+
+    // ---- H7': windowed (EWMA) conflict threshold (pure) ----
+
+    @Test
+    fun conflictThresholdWindowed_warmupThenTracksRecentRate() {
+        // Warmup: below CONFLICT_MIN_SAMPLES -> batch regardless of rate.
+        assertEquals(0, MergeOrchestrator.conflictThresholdWindowed(recentRate = 0.9, totalSamples = 5, optimisticThr = 16))
+        // Warmed: recent rate is the discriminator (not lifetime). High recent rate -> optimistic even if a long
+        // low-conflict history would have diluted a cumulative average below threshold (the iter17 lag, fixed).
+        assertEquals(16, MergeOrchestrator.conflictThresholdWindowed(recentRate = 0.53, totalSamples = 800, optimisticThr = 16),
+            "recent 53% conflict -> flip to optimistic")
+        assertEquals(0, MergeOrchestrator.conflictThresholdWindowed(recentRate = 0.20, totalSamples = 800, optimisticThr = 16),
+            "recent 20% conflict -> stay batch")
+        // Boundary: exactly HIGH_CONFLICT_RATE flips.
+        assertEquals(16, MergeOrchestrator.conflictThresholdWindowed(recentRate = 0.35, totalSamples = 100, optimisticThr = 16))
+    }
+
+    @Test
+    fun conflictThresholdWindowed_customCrossoverThreshold() {
+        // The crossover is tunable (runtime ARXAEL_HIGH_CONFLICT_RATE / future gate-cost-adaptive). A recent rate of
+        // 0.30 stays batch at the default 0.35 crossover but flips at a lowered 0.25 crossover — the lever iter19
+        // showed we need (a100 conflict parked near 0.35, so the default never committed).
+        assertEquals(0, MergeOrchestrator.conflictThresholdWindowed(0.30, 800, 16, highConflictRate = 0.35))
+        assertEquals(16, MergeOrchestrator.conflictThresholdWindowed(0.30, 800, 16, highConflictRate = 0.25))
+    }
+
+    @Test
+    fun conflictThresholdWindowed_decisiveWhereCumulativeLagged() {
+        // The iter17 failure, distilled: a run whose conflict BUILT to ~53% but whose LIFETIME ratio was only ~31%
+        // (dragged by the low-conflict early phase). Cumulative stays batch (wrong); windowed flips (right).
+        assertEquals(0, MergeOrchestrator.conflictThreshold(landed = 690, bounced = 310, optimisticThr = 16),
+            "cumulative 31% -> batch (the lagging miss)")
+        assertEquals(16, MergeOrchestrator.conflictThresholdWindowed(recentRate = 0.53, totalSamples = 1000, optimisticThr = 16),
+            "windowed reads the CURRENT 53% -> optimistic (the fix)")
+    }
+
+    // ---- H8: conflict-aware batch composition (pure) ----
+
+    private fun pr(branch: String) = PullRequest(branch = branch, module = null, agentId = null)
+
+    @Test
+    fun composeDisjoint_allDisjointFillsBatchUpToCap() {
+        // Low-conflict: every PR touches a different file -> all selected (up to cap), nothing deferred.
+        val cands = listOf(pr("a"), pr("b"), pr("c"))
+        val files = mapOf("a" to setOf("F1"), "b" to setOf("F2"), "c" to setOf("F3"))
+        val (sel, def) = MergeOrchestrator.composeDisjointBatch(cands, cap = 8) { files[it.branch]!! }
+        assertEquals(listOf("a", "b", "c"), sel.map { it.branch })
+        assertTrue(def.isEmpty())
+    }
+
+    @Test
+    fun composeDisjoint_defersProvenOverlapKeepingFifoHead() {
+        // High-conflict: a,b,c all touch F0; d touches F9. FIFO head 'a' claims F0 -> b,c defer (proven overlap);
+        // d is disjoint -> selected. Deferred list preserves order (b before c) for fair next-round retry.
+        val cands = listOf(pr("a"), pr("b"), pr("c"), pr("d"))
+        val files = mapOf("a" to setOf("F0"), "b" to setOf("F0"), "c" to setOf("F0"), "d" to setOf("F9"))
+        val (sel, def) = MergeOrchestrator.composeDisjointBatch(cands, cap = 8) { files[it.branch]!! }
+        assertEquals(listOf("a", "d"), sel.map { it.branch }, "head + the disjoint PR land; the overlappers wait")
+        assertEquals(listOf("b", "c"), def.map { it.branch }, "deferred keeps FIFO order")
+    }
+
+    @Test
+    fun composeDisjoint_emptyFilesNeverDefers() {
+        // No overlap evidence (change-awareness off / undiscoverable diff) must never be deferred -> never worse
+        // than FIFO. Two empty-set PRs both select even though set-equal (empty ∩ empty has no *claimed* path).
+        val cands = listOf(pr("a"), pr("b"))
+        val (sel, def) = MergeOrchestrator.composeDisjointBatch(cands, cap = 8) { emptySet() }
+        assertEquals(listOf("a", "b"), sel.map { it.branch })
+        assertTrue(def.isEmpty())
+    }
+
+    @Test
+    fun composeDisjoint_respectsCapAndDefersOverflow() {
+        // Cap binds before disjointness: 3 disjoint PRs, cap 2 -> first two selected, third deferred.
+        val cands = listOf(pr("a"), pr("b"), pr("c"))
+        val files = mapOf("a" to setOf("F1"), "b" to setOf("F2"), "c" to setOf("F3"))
+        val (sel, def) = MergeOrchestrator.composeDisjointBatch(cands, cap = 2) { files[it.branch]!! }
+        assertEquals(listOf("a", "b"), sel.map { it.branch })
+        assertEquals(listOf("c"), def.map { it.branch })
+    }
+
+    @Test
+    fun composeDisjoint_partialOverlapAcrossMultipleFilesDefers() {
+        // Overlap on ANY shared path defers: b shares F2 with a (which claimed F1,F2) -> deferred; c is clean.
+        val cands = listOf(pr("a"), pr("b"), pr("c"))
+        val files = mapOf("a" to setOf("F1", "F2"), "b" to setOf("F2", "F3"), "c" to setOf("F4", "F5"))
+        val (sel, def) = MergeOrchestrator.composeDisjointBatch(cands, cap = 8) { files[it.branch]!! }
+        assertEquals(listOf("a", "c"), sel.map { it.branch })
+        assertEquals(listOf("b"), def.map { it.branch })
     }
 
     /** A worktree checked out to main for a final full-gate assertion. */

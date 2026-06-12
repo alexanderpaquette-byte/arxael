@@ -15,7 +15,7 @@ SUDO=""; [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1 && SUDO="sudo"
 # Export rather than inline-prefix: `$SUDO VAR=val cmd` breaks when $SUDO is empty (root) because bash
 # fixes assignment-recognition at PARSE time by position, so the expanded-away $SUDO leaves VAR=val as the
 # command word ("command not found"). Exporting works whether or not sudo is present (sudo inherits it via -E
-# is not needed for apt's DEBIAN_FRONTEND since we run apt as the same env). Found by bench/install_container.sh.
+# is not needed for apt's DEBIAN_FRONTEND since we run apt as the same env). Found by container-based install testing.
 export DEBIAN_FRONTEND=noninteractive
 
 # ---------------------------------------------------------------- 0. base tools (git/curl/unzip/python3)

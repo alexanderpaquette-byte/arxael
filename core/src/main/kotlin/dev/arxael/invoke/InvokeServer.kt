@@ -38,10 +38,17 @@ class InvokeServer(
     private val onShutdown: () -> Unit,
     private val merge: MergeService? = null,
     private val governor: AdaptiveGovernor? = null,
+    private val authToken: String? = null,
 ) {
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
     private val MAX_BODY_BYTES = 4 * 1024 * 1024 // 4 MB cap on a request body (specs are tiny JSON)
     private lateinit var http: HttpServer
+
+    /** Mutating endpoints require the local token (header X-Arxael-Token) unless auth is disabled. Read-only
+     *  endpoints (/, /health, /metrics, /merge/status, /merge/pr) stay open so monitoring + self-describe are
+     *  frictionless. Returns true if the request may proceed; otherwise the caller should 401. */
+    private fun authed(ex: HttpExchange): Boolean =
+        authToken == null || ex.requestHeaders.getFirst("X-Arxael-Token") == authToken
 
     fun start() {
         http = HttpServer.create(InetSocketAddress("127.0.0.1", config.port), 0)
@@ -72,14 +79,21 @@ class InvokeServer(
      * fallback for any unknown path, so a lost caller is handed the contract rather than a bare 404.
      */
     private fun handleRoot(ex: HttpExchange) {
+        // The "/" context is the catch-all (JDK HttpServer longest-prefix match), so this also receives unknown
+        // paths and typo'd routes (e.g. POST /merge/sumbit). Hand back the contract either way, but keep the
+        // status truthful: 200 only for the real root, 405 for a non-GET on it, 404 for anything else — so a
+        // typo can't masquerade as a successful call (both used to be 200).
+        val onRoot = ex.requestURI.path.let { it == "/" || it.isEmpty() }
+        val code = if (!onRoot) 404 else if (ex.requestMethod != "GET") 405 else 200
         respond(
-            ex, 200,
+            ex, code,
             """
             {
               "service": "arxael-dev-kit",
               "what": "One warm, bounded build/test executor that many trusted local agents share to work on ONE project: branch -> test -> PR -> merge to main, fast and without conflicts.",
               "ifYouAreAnAgent": "To land your change: (1) make your branch IN THE SHARED HUB REPO (create your worktree off the hub path that 'arxael up' printed, or 'git push <hub> <branch>') — a branch the hub never received is reported state 'missing'; (2) POST /invoke to build/test your worktree; (3) when green, POST /merge/submit with your branch; (4) GET /merge/pr?branch=<b>&wait=30 to await YOUR outcome (landed/reverted/bounced) instead of racing the shared landed counter. Tests run on a shared bounded executor, so expect to queue under load (status OVERLOADED = retry later).",
               "loopbackOnly": true,
+              "auth": "mutating endpoints (POST /invoke, /warmup, /merge/register, /merge/submit, /shutdown) require header 'X-Arxael-Token: <contents of ~/.arxael/token>'; read endpoints (/, /health, /metrics, /merge/status, /merge/pr) are open. Set ARXAEL_NO_AUTH=true to disable.",
               "endpoints": [
                 {"method":"GET","path":"/health","desc":"liveness, live capacity (concurrencyTarget/cores), recentErrors"},
                 {"method":"GET","path":"/metrics","desc":"Prometheus exposition format (scrape target); see ops/grafana-dashboard.json"},
@@ -125,6 +139,7 @@ class InvokeServer(
 
     private fun handleInvoke(ex: HttpExchange) {
         if (ex.requestMethod != "POST") return respond(ex, 405, """{"error":"POST only"}""")
+        if (!authed(ex)) return respond(ex, 401, """{"error":"missing or invalid X-Arxael-Token header (read it from ~/.arxael/token, or set ARXAEL_NO_AUTH=true)"}""")
         val body = readBody(ex) ?: return respond(ex, 413, """{"ok":false,"error":"request body too large"}""")
         val spec = try {
             json.decodeFromString<InvokeSpec>(body)
@@ -151,6 +166,7 @@ class InvokeServer(
 
     private fun handleMergeRegister(ex: HttpExchange, merge: MergeService) {
         if (ex.requestMethod != "POST") return respond(ex, 405, """{"error":"POST only"}""")
+        if (!authed(ex)) return respond(ex, 401, """{"error":"missing or invalid X-Arxael-Token header (read it from ~/.arxael/token, or set ARXAEL_NO_AUTH=true)"}""")
         val body = readBody(ex) ?: return respond(ex, 413, """{"ok":false,"error":"request body too large"}""")
         val spec = try { json.decodeFromString<MergeRegisterSpec>(body) }
             catch (e: Exception) { return respond(ex, 400, """{"ok":false,"error":${jsonStr("bad request: ${e.message}")}}""") }
@@ -164,6 +180,7 @@ class InvokeServer(
 
     private fun handleMergeSubmit(ex: HttpExchange, merge: MergeService) {
         if (ex.requestMethod != "POST") return respond(ex, 405, """{"error":"POST only"}""")
+        if (!authed(ex)) return respond(ex, 401, """{"error":"missing or invalid X-Arxael-Token header (read it from ~/.arxael/token, or set ARXAEL_NO_AUTH=true)"}""")
         val body = readBody(ex) ?: return respond(ex, 413, """{"ok":false,"error":"request body too large"}""")
         val spec = try { json.decodeFromString<MergeSubmitSpec>(body) }
             catch (e: Exception) { return respond(ex, 400, """{"ok":false,"error":${jsonStr("bad request: ${e.message}")}}""") }
@@ -217,6 +234,7 @@ class InvokeServer(
      */
     private fun handleWarmup(ex: HttpExchange) {
         if (ex.requestMethod != "POST") return respond(ex, 405, """{"error":"POST only"}""")
+        if (!authed(ex)) return respond(ex, 401, """{"error":"missing or invalid X-Arxael-Token header (read it from ~/.arxael/token, or set ARXAEL_NO_AUTH=true)"}""")
         val body = readBody(ex) ?: return respond(ex, 413, """{"ok":false,"error":"request body too large"}""")
         val spec = try { json.decodeFromString<InvokeSpec>(body) }
             catch (e: Exception) { return respond(ex, 400, json.encodeToString(reject("bad request: ${e.message}"))) }
@@ -233,6 +251,7 @@ class InvokeServer(
 
     private fun handleShutdown(ex: HttpExchange) {
         if (ex.requestMethod != "POST") return respond(ex, 405, """{"error":"POST only"}""")
+        if (!authed(ex)) return respond(ex, 401, """{"error":"missing or invalid X-Arxael-Token header (read it from ~/.arxael/token, or set ARXAEL_NO_AUTH=true)"}""")
         respond(ex, 200, """{"ok":true,"shutting_down":true}""")
         Thread { onShutdown() }.start()
     }

@@ -18,7 +18,7 @@ for power users / CI who want the knobs.
 
 # Agent-native setup (wraps the deterministic install script)
 
-a coding agent reads this on a fresh box to detect prereqs, install, configure, and smoke-test
+A coding agent reads this on a fresh box to detect prereqs, install, configure, and smoke-test
 the substrate. It WRAPS the deterministic `scripts/install.sh` (the source of truth) — power users / CI
 run that script directly and skip this prose. The acceptance smoke test is deterministic and
 agent-independent (start daemon → `/invoke` a trivial build → assert green).
@@ -86,6 +86,11 @@ The bound and every concurrency knob scale to the box. Key knobs (see `BoxConfig
 | `ARXAEL_GOVERNOR_MS` | 3000 | governor sampling interval |
 | `ARXAEL_ACQUIRE_TIMEOUT_MULT` | 4 | adaptive overload timeout = observed build time × this (floored at `ACQUIRE_TIMEOUT_MS`) |
 | `ARXAEL_ACQUIRE_TIMEOUT_CAP_MS` | 600000 | hard cap on the adaptive overload timeout (a wedged box still fails closed) |
+| `ARXAEL_MERGE_MODE` | balanced | merge risk posture: `conservative` = all batched (max safety), `balanced` = self-tuning default, `fast` = optimistic-leaning |
+| `ARXAEL_GATE_FILL_ROUTING` | on (under balanced) | land optimistically when pending work fills the gate pool, else batch |
+| `ARXAEL_GATE_FILL_HYSTERESIS` | on (under balanced) | sticky regime — don't flap between optimistic and batched |
+| `ARXAEL_BATCHCAP_AWARE` | on (under balanced) | force batch when a batch dominates the gate pool |
+| `ARXAEL_BATCHCAP_DOMINANCE_FACTOR` | 2.0 | the dominance threshold for batchCap-awareness |
 
 ## 5c. Adaptive auto-sizing (tracks the box AND the project's growth)
 The startup bound (`min(coreBound, memBound)`) is only a STARTING estimate. A governor then adapts the live
@@ -110,7 +115,7 @@ sudo scripts/install-service.sh         # installs arxael.service (Restart=alway
 #   systemctl status arxael · journalctl -u arxael -f · sudo scripts/install-service.sh --uninstall
 ```
 A crash → systemd restarts → `PrJournal` re-enqueues + re-gates unfinished PRs (no unverified change left on
-`main`, validated by `bench/chaos_recovery.py`). A wedge (process alive but `/health` stops answering) → the
+`main`, validated under fault injection). A wedge (process alive but `/health` stops answering) → the
 liveness timer restarts it. Same one box, now self-healing (downtime = restart seconds).
 
 ## 6. Power users / CI
@@ -162,7 +167,8 @@ design in `docs/ARCHITECTURE.md` / `docs/ARCHITECTURE.md`). The agent-runner cre
 ```bash
 # register the project — forwardDeps OPTIONAL: omit it and the daemon auto-discovers the module graph from
 # the project itself (correct-by-construction; supply it explicitly only to override). threshold = the
-# closure size at/under which a PR lands optimistically.
+# closure size that BOUNDS optimistic eligibility; under the default self-tuning balanced mode it only
+# bounds the optimistic set, and live load decides batch-vs-optimistic within that bound.
 curl -sX POST 127.0.0.1:8723/merge/register -H 'Content-Type: application/json' \
   -d '{"repo":"/path/to/bare.git","threshold":4,"gateWorktrees":4}'
 # submit a branch-tested PR (module = its Gradle path; null => routed batched/full)
@@ -170,9 +176,12 @@ curl -sX POST 127.0.0.1:8723/merge/submit -H 'Content-Type: application/json' \
   -d '{"branch":"feature-x","module":":app","agentId":"agent7"}'
 curl -s 127.0.0.1:8723/merge/status     # landed / reverts / time-to-land / routing split
 ```
-Routing: small dependency-closure PRs land optimistically (instant) and verify async on a module-scoped
-gate that auto-reverts a break; large-closure PRs go through a batched gate-then-land that never breaks
-main and attributes the culprit on a red batch. Gate tests run on the reserved high-priority lane
+Routing is load-adaptive and self-tuning under the default `balanced` mode: a PR lands optimistically
+(instant, verifies async on a module-scoped gate that auto-reverts a break) when pending work fills the
+gate pool, and goes through a batched gate-then-land (never breaks main, attributes the culprit on a red
+batch) when load is low — with hysteresis so the regime doesn't flap and batchCap-awareness that forces
+batch when a batch dominates the pool; closure size bounds optimistic eligibility. `ARXAEL_MERGE_MODE=conservative`
+batches everything, `fast` leans optimistic. Gate tests run on the reserved high-priority lane
 (`ARXAEL_RESERVED_HIGH` > 0 so landings never starve behind agent branch-tests). `ARXAEL_MERGE_GATE_ADAPTER`
 defaults to `gradle` but can be any **named** adapter (`maven`, `pytest`, `cargo`, `go`, `npm`, …) — each
 adapter's default command is overridable via `ARXAEL_<NAME>_CMD` (e.g. `ARXAEL_MAVEN_CMD="mvn -q -pl core -am
@@ -185,6 +194,5 @@ the whole batch as suspect — so "branch → test → PR → merge to main" wor
 than gradle's per-module attribution.
 
 ## 6. Power users / CI
-Run `scripts/install.sh` then `scripts/smoke.sh` directly; set the env to taste. Quality gates:
-`scripts/quality.sh` (coverage + mutation + trivy). Benchmarks + the merge-workflow prototype: `bench/`
-(`bench/README.md`, `bench/merge_sim.py`, results in `bench/results/`).
+Run `scripts/install.sh` then `scripts/smoke.sh` directly; set the configuration env to taste. Quality gates:
+`scripts/quality.sh` (coverage + mutation + trivy).

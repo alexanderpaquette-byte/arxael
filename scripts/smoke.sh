@@ -36,7 +36,7 @@ ARXAEL_PORT="${PORT}" ARXAEL_GRADLE_HOME="${GRADLE_HOME}" ARXAEL_STATE_DIR="${ST
   "${LAUNCHER}" >"${STATE_DIR}/daemon.log" 2>&1 &
 DAEMON_PID=$!
 cleanup() {
-  curl -fsS -X POST "${BASE}/shutdown" >/dev/null 2>&1 || true
+  curl -fsS -X POST "${BASE}/shutdown" -H "X-Arxael-Token: $(cat "${STATE_DIR}/token" 2>/dev/null)" >/dev/null 2>&1 || true
   sleep 0.3
   kill "${DAEMON_PID}" >/dev/null 2>&1 || true
 }
@@ -53,13 +53,18 @@ done
 HEALTH="$(curl -fsS "${BASE}/health")"
 [ "$(echo "${HEALTH}" | field ok)" = "True" ] && pass "health ok (${HEALTH})" || fail "health not ok: ${HEALTH}"
 
+# --- 1b. local API token: read it; prove a mutating endpoint rejects a MISSING token (401) ---
+TOKEN="$(cat "${STATE_DIR}/token" 2>/dev/null)"
+NOAUTH_CODE="$(curl -s -o /dev/null -w '%{http_code}' -X POST "${BASE}/invoke" -d '{"adapter":"noop","worktree":"'"${REPO_ROOT}"'","tasks":["x"]}')"
+[ "${NOAUTH_CODE}" = "401" ] && pass "auth enforced (no token -> 401)" || fail "mutating endpoint unprotected: no-token /invoke -> ${NOAUTH_CODE}"
+
 # --- 2. noop invoke ---
-NOOP="$(curl -fsS -X POST "${BASE}/invoke" -d '{"adapter":"noop","worktree":"'"${REPO_ROOT}"'","tasks":["x"],"args":["sleepMs=10"],"agentId":"smoke"}')"
+NOOP="$(curl -fsS -X POST "${BASE}/invoke" -H "X-Arxael-Token: ${TOKEN}" -d '{"adapter":"noop","worktree":"'"${REPO_ROOT}"'","tasks":["x"],"args":["sleepMs=10"],"agentId":"smoke"}')"
 [ "$(echo "${NOOP}" | field status)" = "SUCCESS" ] && pass "noop SUCCESS" || fail "noop not SUCCESS: ${NOOP}"
 
 # --- 3. real gradle build ---
 info "running gradle smoke build (first run warms the connection)"
-GRADLE="$(curl -fsS -X POST "${BASE}/invoke" -d '{"adapter":"gradle","worktree":"'"${FIXTURE}"'","tasks":["smoke"],"args":["--quiet"],"agentId":"smoke"}')"
+GRADLE="$(curl -fsS -X POST "${BASE}/invoke" -H "X-Arxael-Token: ${TOKEN}" -d '{"adapter":"gradle","worktree":"'"${FIXTURE}"'","tasks":["smoke"],"args":["--quiet"],"agentId":"smoke"}')"
 GSTATUS="$(echo "${GRADLE}" | field status)"
 GOUT="$(echo "${GRADLE}" | field output)"
 if [ "${GSTATUS}" = "SUCCESS" ] && echo "${GOUT}" | grep -q "ARXAEL_SMOKE_OK"; then
@@ -69,7 +74,7 @@ else
 fi
 
 # --- 4. allowlist fails closed ---
-REJ="$(curl -fsS -o /dev/null -w '%{http_code}' -X POST "${BASE}/invoke" -d '{"adapter":"gradle","worktree":"'"${FIXTURE}"'","tasks":["smoke"],"args":["--gradle-user-home","/tmp/evil"]}' || true)"
+REJ="$(curl -fsS -o /dev/null -w '%{http_code}' -X POST "${BASE}/invoke" -H "X-Arxael-Token: ${TOKEN}" -d '{"adapter":"gradle","worktree":"'"${FIXTURE}"'","tasks":["smoke"],"args":["--gradle-user-home","/tmp/evil"]}' || true)"
 [ "${REJ}" = "422" ] && pass "subversive arg REJECTED (HTTP 422)" || fail "allowlist did not reject subversive arg (HTTP ${REJ})"
 
 # --- 5. native Prometheus /metrics ---
@@ -77,6 +82,12 @@ METRICS="$(curl -fsS "${BASE}/metrics")"
 echo "${METRICS}" | grep -q '^arxael_up 1$' && pass "metrics expose arxael_up" || fail "no arxael_up in /metrics: ${METRICS}"
 echo "${METRICS}" | grep -q '^# TYPE arxael_executor_max_concurrent gauge$' \
   && pass "metrics expose executor gauges" || fail "no executor gauge in /metrics"
+
+# --- 5b. routing is truthful: real root 200, unknown path 404 (a typo'd route must not look like success) ---
+ROOT_CODE="$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/")"
+NOPE_CODE="$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/merge/sumbit")"
+[ "${ROOT_CODE}" = "200" ] && [ "${NOPE_CODE}" = "404" ] \
+  && pass "routing truthful (/ -> 200, unknown path -> 404)" || fail "routing wrong: / -> ${ROOT_CODE}, /merge/sumbit -> ${NOPE_CODE}"
 
 # --- 6. multi-language adapters registered (logged at startup) ---
 grep -q 'adapters=\[.*pytest.*cargo.*\]' "${STATE_DIR}/daemon.log" \

@@ -129,11 +129,15 @@ The warm executor is the foundation. Two layers ride on it to make the product t
 that sizes itself*. Deep dives: [ARCHITECTURE.md](ARCHITECTURE.md), [SETUP.md](SETUP.md).
 
 - 🟣 **Merge orchestrator** (`dev.arxael.merge`, surface `/merge/{register,submit,status}`). Agents submit
-  branch-tested PRs; the orchestrator lands them on a shared `main` without conflicts. It **auto-routes**
-  each PR by its dependency-closure size (auto-discovered from the project's Gradle graph): small closure →
-  **optimistic land + module-scoped async gate** that auto-reverts a break (instant, no cascade); large
-  closure → **batched gate-then-land** that never breaks main and attributes the culprit on a red batch.
-  Gate tests run on the executor's reserved high-priority lane so landings never starve behind branch-tests.
+  branch-tested PRs; the orchestrator lands them on a shared `main` without conflicts. It **self-tunes routing
+  to live load**: it lands **optimistically** (module-scoped async gate that auto-reverts a break — instant,
+  no cascade) when there's enough pending work to fill the async gate pool, and **batches** (gate-then-land
+  that never breaks main and attributes the culprit on a red batch) when load is low — with hysteresis so the
+  regime is sticky and doesn't flap, and batchCap-awareness that forces the sound batched path when a batch
+  dominates the gate pool. Dependency-closure size (auto-discovered from the project's Gradle graph) still
+  **bounds** optimistic eligibility. `ARXAEL_MERGE_MODE=balanced` is the default; `conservative` batches
+  everything (max safety), `fast` leans optimistic. Gate tests run on the executor's reserved high-priority
+  lane so landings never starve behind branch-tests.
 
 - 🟡 **Adaptive auto-sizing** (`dev.arxael.autosize`). The static box-derived bound is only a starting point;
   a governor adapts the live concurrency bound + build-workers (coupled `C·W ≈ cores`) to **measured memory
@@ -192,13 +196,6 @@ flowchart LR
         quality["quality.sh<br/>coverage · mutation · trivy"]:::script
     end
 
-    subgraph bench["bench/  (benchmarks + real-world validation)"]
-        benchpy["bench.py / run_sweep.sh<br/>density sweep (arm×agents×cores)"]:::bench
-        mergesim["merge_sim.py<br/>merge-strategy prototype"]:::bench
-        realworld["realworld_oss / caffeine / chaos<br/>real OSS + crash-recovery proofs"]:::bench
-        analyze["analyze.py / sampler.py<br/>collapse-point + resource sampling"]:::bench
-    end
-
     subgraph fixtures["fixtures/"]
         hello["gradle-hello<br/>smoke fixture (ARXAEL_SMOKE_OK)"]:::fixture
     end
@@ -212,16 +209,11 @@ flowchart LR
     smoke -->|/invoke| daemon
     smoke --> hello
     quality -->|gradlew test/jacoco/pitest| repo[(:core build)]:::service
-    benchpy -->|warm arm: /invoke| daemon
-    benchpy -->|container arm: docker gradle| ctr([per-agent containers]):::bad
-    realworld -->|/invoke + /merge| daemon
 
     classDef script fill:#fef3c7,stroke:#d97706,color:#78350f
-    classDef bench fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
     classDef fixture fill:#dcfce7,stroke:#16a34a,color:#14532d
     classDef cfg fill:#f1f5f9,stroke:#475569,color:#0f172a
     classDef service fill:#ede9fe,stroke:#7c3aed,color:#4c1d95,font-weight:bold
-    classDef bad fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
 ```
 
 ## 3. Runtime — the whole daemon (one process)
@@ -255,7 +247,7 @@ flowchart TB
         depcache["Shared RO dep cache<br/>Warmer + Consolidator"]:::artifact
 
         subgraph mergelayer["Merge orchestrator (dev.arxael.merge)"]
-            router["MergeRouter<br/>auto-route by closure size"]:::core
+            router["MergeRouter<br/>load-adaptive (gate-fill) · closure-bounded"]:::core
             orch["MergeOrchestrator<br/>optimistic-land + async revert / batched gate"]:::core
             journal["PrJournal<br/>crash recovery"]:::aux
         end
@@ -291,15 +283,15 @@ flowchart TB
 
 ## 4. The merge workflow (auto-route)
 
-> Two strategies, picked automatically per PR by its dependency-closure size. Optimistic-land gives
+> Two strategies, selected adaptively by live load (gate-fill + hysteresis) and bounded by dependency-closure size. Optimistic-land gives
 > the **latency**; the branch-gate + module-scoped verify give the **soundness** (main never breaks).
 
 ```mermaid
 flowchart TB
-    pr["PR submitted<br/>/merge/submit (branch, module)"]:::agent --> router{"MergeRouter:<br/>dependency-closure size?"}:::gate
+    pr["PR submitted<br/>/merge/submit (branch, module)"]:::agent --> router{"MergeRouter:<br/>load + closure?"}:::gate
 
-    router -->|"small / independent"| opt["Optimistic: land NOW,<br/>verify async"]:::core
-    router -->|"large / deep chain"| batch["Batched: gate-then-land<br/>(1 test per batch)"]:::core
+    router -->|"high load / small closure → Optimistic land"| opt["Optimistic: land NOW,<br/>verify async"]:::core
+    router -->|"low load / large closure → Batched"| batch["Batched: gate-then-land<br/>(1 test per batch)"]:::core
 
     opt --> ascan{"module-scoped<br/>async gate"}:::gate
     ascan -->|green| done1["stays landed ✓<br/>~0.1s time-to-land"]:::good
@@ -323,9 +315,10 @@ flowchart TB
   self-filling consolidator converges re-downloads to ~zero (closes the Maven-429 blocker).
 - **The concurrency bound is adaptive** — AIMD governor resizes it to measured memory pressure within
   `[floor, ceiling]`, shrinking *before* OOM and growing into spare capacity.
-- **Merge auto-routes** — optimistic-land + module-scoped async revert (fast, small closures) vs batched
-  gate-then-land + culprit attribution (sound, large closures); gates run on a reserved **high** lane so
-  landings never starve behind branch-tests.
+- **Merge routing self-tunes to load** — optimistic when load fills the gate pool, batched when it doesn't
+  (hysteresis prevents flapping; a dominating batch forces the sound path); closure size bounds optimistic
+  eligibility. Optimistic-land + module-scoped async revert vs batched gate-then-land + culprit attribution;
+  gates run on a reserved **high** lane so landings never starve behind branch-tests.
 - **Branch-gate = soundness, optimistic-land = latency** — together: instant landings, main never broken.
 - **PrJournal survives restart** — re-enqueues submitted-but-unfinished and landed-but-unverified PRs.
 - **Change-aware gate** — a doc-only PR skips the gate (can't break a test); a code PR is tested against

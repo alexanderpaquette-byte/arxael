@@ -79,7 +79,7 @@ class MergeServiceTest {
 
         assertFalse(service.submit("x", ":mod1", null), "submit before register is a no-op")
 
-        val reg = service.register(bare.toString(), modules.associateWith { emptySet() }, threshold = 4, gateCount = 2)
+        val reg = service.register(bare.toString(), modules.associateWith { emptySet() }, thresholdSpec = 4, gateCount = 2)
         assertEquals(2, reg.modules)
         assertTrue(service.isRegistered())
 

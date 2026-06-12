@@ -16,7 +16,7 @@ That's the entire setup. It will:
 It's idempotent (safe to re-run) and self-cleaning. On a warm box it finishes in seconds; on a truly fresh
 box the one-time JDK + Gradle downloads and first build are the only slow part (a few minutes, comfortably
 under ten). **Measured:** a clean `ubuntu:24.04` container (nothing pre-installed) reaches `✓ READY` in
-**~70 seconds** — validated by `bench/install_container.sh`, which also runs `arxael verify` (unit tests +
+**~70 seconds** — validated end-to-end with `arxael verify` (unit tests +
 acceptance smoke + multi-language) to prove it actually works, not just answers.
 
 ## From absolute zero (no repo yet)
@@ -67,6 +67,6 @@ curl -s 127.0.0.1:$(cat ~/.arxael/port)/      # self-describing JSON: what it is
 ```
 
 ## What's underneath
-[docs/SETUP.md](docs/SETUP.md) (every knob), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (the numbers + design),
-[docs/OVERVIEW.md](docs/OVERVIEW.md) (the shape). But you don't need any of it to get running — just the one
+[docs/SETUP.md](docs/SETUP.md) (every knob), [docs/OVERVIEW.md](docs/OVERVIEW.md) (the shape). But you
+don't need any of it to get running — just the one
 command above.

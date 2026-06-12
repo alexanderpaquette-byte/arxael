@@ -22,13 +22,17 @@ object GitOps {
     /** Per-invocation git config so the daemon is SELF-CONTAINED — never depends on ambient git state. A
      *  fresh box / container has no global `user.name`/`user.email`, so the orchestrator's own merge/revert
      *  COMMITS would fail ("tell me who you are") and nothing would land — a portability bug found by
-     *  bench/install_container.sh. We also disable commit signing (no GPG prompt on locked-down boxes) and
+     *  container-based install testing. We also disable commit signing (no GPG prompt on locked-down boxes) and
      *  trust any worktree owner (container UID mismatch -> git's "dubious ownership" refusal). Passed as `-c`
      *  flags before the subcommand, harmless for read-only ops. */
+    // safe.directory is passed per-invocation (it does NOT mutate the user's global git config — only relaxes
+    // the dubious-ownership check for arxael's OWN git subprocesses). Default `*` is the container-UID-mismatch
+    // escape hatch; arxael only operates on repos it created (same UID), so it normally never fires. The
+    // security-conscious can pin it (ARXAEL_GIT_SAFE_DIRECTORY=/path/to/hub) or clear it ("" → omit the flag).
+    private val safeDir = System.getenv("ARXAEL_GIT_SAFE_DIRECTORY") ?: "*"
     private val SELF_CONTAINED = listOf(
-        "-c", "user.name=arxael", "-c", "user.email=arxael@localhost",
-        "-c", "commit.gpgsign=false", "-c", "safe.directory=*",
-    )
+        "-c", "user.name=arxael", "-c", "user.email=arxael@localhost", "-c", "commit.gpgsign=false",
+    ) + if (safeDir.isNotEmpty()) listOf("-c", "safe.directory=$safeDir") else emptyList()
 
     /** Run a git command in [cwd]; stdout+stderr merged, trimmed. Never throws on non-zero exit. */
     fun git(cwd: Path, vararg args: String): Result {

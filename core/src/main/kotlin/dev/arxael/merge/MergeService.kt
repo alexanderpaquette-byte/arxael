@@ -34,8 +34,10 @@ class MergeService(
     private val longPollGate = java.util.concurrent.Semaphore(maxOf(1, config.maxConcurrent))
 
     @Synchronized
-    fun register(repo: String, forwardDeps: Map<String, Set<String>>, threshold: Int, gateCount: Int): Registered {
+    fun register(repo: String, forwardDeps: Map<String, Set<String>>, thresholdSpec: Int, gateCount: Int): Registered {
         teardown()
+        // <0 means "the caller didn't specify" -> use the daemon's ARXAEL_MERGE_MODE-derived default.
+        val threshold = if (thresholdSpec < 0) config.routeThreshold else thresholdSpec
         val bare = Path.of(repo)
         require(GitOps.ok(bare, "rev-parse", "--verify", "main")) { "repo '$repo' has no 'main' branch" }
 
@@ -48,7 +50,9 @@ class MergeService(
         require(GitOps.ok(bare, "worktree", "add", "-q", "--detach", integ.toString(), "main")) {
             "could not create integration worktree"
         }
-        val gates = (0 until maxOf(1, gateCount)).map { base.resolve("gate$it") }
+        // <=0 means "the caller didn't pin a pool size" -> H4 adaptive default sized to the box (cores+RAM).
+        val gateN = if (gateCount > 0) gateCount else config.autoGateWorktrees()
+        val gates = (0 until maxOf(1, gateN)).map { base.resolve("gate$it") }
         gates.forEach {
             // require (not bare git()): a failed gate-worktree add would hand the orchestrator a phantom path
             // whose every async gate errors at runtime (silent throughput loss). Fail register loudly instead.
@@ -121,6 +125,28 @@ class MergeService(
             confirmThreshold = config.optimisticConfirmations,
             confirmStore = ConfirmationStore(config.stateDir.resolve("optimistic-confirmations")),
             moduleDirs = moduleDirs,
+            gateBackpressure = config.gateBackpressure,
+            maxVerifyLagMs = config.maxVerifyLagMs,
+            conflictAdaptive = config.conflictAdaptiveRouting,
+            conflictOptimisticThreshold = config.conflictOptimisticThreshold,
+            conflictEwmaAlpha = config.conflictEwmaAlpha,
+            highConflictRate = config.highConflictRate,
+            conflictDecayTauS = config.conflictDecayTauS,
+            optimisticWedgeGuard = config.optimisticWedgeGuard,
+            loadAwareRouting = config.loadAwareRouting,
+            loadAwareFraction = config.loadAwareFraction,
+            revertHealthGuard = config.revertHealthGuard,
+            revertHealthCooldownMs = config.revertHealthCooldownMs,
+            gateFillRouting = config.gateFillRouting,
+            gateFillFrac = config.gateFillFrac,
+            gateFillHysteresis = config.gateFillHysteresis,
+            batchCapAware = config.batchCapAware,
+            batchCapDominanceFactor = config.batchCapDominanceFactor,
+            banditRouting = config.banditRouting,
+            banditWindowMs = config.banditWindowMs,
+            banditExploreEvery = config.banditExploreEvery,
+            banditAlpha = config.banditAlpha,
+            disjointBatch = config.disjointBatch,
         ).also {
             it.start()
             it.recover()

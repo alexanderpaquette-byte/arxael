@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# lab — guarded operations for the autonomous tuning loop. Exists so the recurring footguns are encoded ONCE
+# instead of re-remembered every cycle. Three things have bitten this loop repeatedly:
+#   1. `pkill -f <pat>` self-matches the shell running it -> exit 144 (self-kill). NEVER pattern-kill here.
+#   2. Killing/ reaping ALL dev.arxael JVMs takes down the SUPERVISED service on :8723 (sacred) and running sweeps.
+#   3. `installDist` WHILE a sweep is running rewrites bin/core mid-cell -> the cell's daemon dies (n5_f05 incident).
+# Every kill here resolves PIDs via jps (JVM list) + ss (listening port), excludes :8723 and self, and never matches
+# a pattern that could include this script's own argv. build refuses while a sweep is live. One command, can't forget.
+#
+# Usage: scripts/lab <status|build|kill [-9]|ports|guard-ok>
+set -u
+KIT="$(cd "$(dirname "$0")/.." && pwd)"
+SACRED_PORT=8723                 # the supervised arxael.service — NEVER touch
+TEST_PORT_LO=9400                # bench/sweep daemons live here and up
+self=$$
+
+# --- is a sweep currently consuming the dist? (merge_http_load driver running OR an iter*.service active) ---
+sweep_running() {
+  # bracket-split so this script's own argv ("lab ...") can never match the pattern
+  if ps -eo args 2>/dev/null | grep -q 'merge_http_loa[d]\.py'; then return 0; fi
+  systemctl --user list-units 'iter*' --no-legend 2>/dev/null | grep -q 'running' && return 0
+  return 1
+}
+
+# --- ALL TCP ports a JVM PID LISTENS on (space-separated, may be EMPTY if ss can't resolve it). We return every
+#     port (not head -1) so a multi-port daemon can't hide its :8723 behind another port, and so kill can fail-CLOSED
+#     on empty (unknown = protect, never kill). `index()` is a literal substring match (no regex surprises). ---
+jvm_ports() {  # $1=pid
+  ss -ltnpH 2>/dev/null | awk -v p="pid=$1," 'index($0, p) {print $4}' | grep -oE '[0-9]+$' | sort -un | tr '\n' ' '
+}
+
+cmd_status() {
+  echo "== :$SACRED_PORT (supervised, protected) =="
+  curl -s -m3 "localhost:$SACRED_PORT/health" >/dev/null 2>&1 && echo "  ALIVE" || echo "  (down)"
+  echo "== sweeps =="
+  systemctl --user list-units 'iter*' 'chain*' --no-legend 2>/dev/null | sed 's/^/  /' || true
+  sweep_running && echo "  -> sweep ACTIVE (build is BLOCKED)" || echo "  -> no sweep (build OK)"
+  echo "== arxael JVMs (pid port) =="
+  if command -v jps >/dev/null 2>&1; then
+    for p in $(jps -l 2>/dev/null | awk '/dev\.arxael/{print $1}'); do
+      ports=$(jvm_ports "$p"); prot=""
+      for pt in $ports; do [ "$pt" = "$SACRED_PORT" ] && prot="  <-- PROTECTED"; done
+      [ -z "$ports" ] && prot="  <-- no port resolved (kill would PROTECT)"
+      echo "  pid=$p ports=${ports:-?}$prot"
+    done
+  fi
+}
+
+cmd_ports() { ss -ltnpH 2>/dev/null | awk '/dev\.arxael|java/{print $4}' | grep -oE '[0-9]+$' | sort -un | tr '\n' ' '; echo; }
+
+# True iff $1 is a JVM we may kill: it has >=1 resolved port AND every port is in the test range. FAIL-CLOSED —
+# empty/unknown port, or ANY port below the test range (the sacred :8723 lives at 8723 < 9400), returns false.
+killable() {  # $1=ports-string
+  local ports="$1" pt
+  [ -z "$ports" ] && return 1                       # unknown -> protect
+  for pt in $ports; do
+    [ "$pt" -ge "$TEST_PORT_LO" ] 2>/dev/null || return 1   # any non-test / non-numeric port -> protect
+  done
+  return 0
+}
+
+cmd_build() {
+  if sweep_running; then
+    echo "REFUSED: a sweep is consuming the dist (bin/core is launched fresh per cell)."
+    echo "Building now would corrupt the in-flight cell (see n5_f05 incident). Build after COMPLETE."
+    echo "Run 'scripts/lab status' to see what's active."
+    exit 3
+  fi
+  echo "no sweep active -> building :core:installDist ..."
+  ARXAEL_GRADLE_HOME="${ARXAEL_GRADLE_HOME:-/opt/gradle/gradle-8.10.2}" "$KIT/gradlew" :core:installDist --rerun-tasks -q
+  rc=$?
+  if [ $rc -ne 0 ]; then echo "BUILD FAILED rc=$rc"; exit $rc; fi
+  # H13 lesson: verify the daemon ENTRYPOINT made it into the dist, not just that compile passed.
+  if grep -q 'dev.arxael.MainKt' "$KIT/core/build/install/core/bin/core" 2>/dev/null; then
+    echo "BUILD OK — dev.arxael.MainKt entrypoint present."
+  else
+    echo "BUILD WARNING — entrypoint MISSING from dist (daemon would ClassNotFound). Investigate."; exit 4
+  fi
+}
+
+cmd_kill() {  # kill TEST daemons only — FAIL-CLOSED: never :8723, never an unresolved JVM, never self/pattern-match
+  local sig="${1:-}"
+  local killed=0
+  if command -v jps >/dev/null 2>&1; then
+    for p in $(jps -l 2>/dev/null | awk '/dev\.arxael/{print $1}'); do
+      [ "$p" = "$self" ] && continue
+      local ports; ports=$(jvm_ports "$p")
+      if killable "$ports"; then
+        kill ${sig} "$p" 2>/dev/null && { echo "  killed pid=$p ports=$ports"; killed=$((killed+1)); }
+      else
+        echo "  PROTECT pid=$p ports=${ports:-unresolved} (not confirmed test-range; :$SACRED_PORT is safe)"
+      fi
+    done
+  fi
+  # the python load drivers (bracket-split literal cannot match this script's argv)
+  for p in $(ps -eo pid,args 2>/dev/null | awk '/merge_http_loa[d]\.py|merge_si[m]\.py/{print $1}'); do
+    [ "$p" = "$self" ] && continue
+    kill ${sig:--TERM} "$p" 2>/dev/null && { echo "  killed driver pid=$p"; killed=$((killed+1)); }
+  done
+  echo "killed=$killed (fail-closed: only confirmed test-range JVMs; :$SACRED_PORT and any unresolved JVM protected)"
+  exit 0
+}
+
+case "${1:-}" in
+  status)   cmd_status ;;
+  ports)    cmd_ports ;;
+  build)    cmd_build ;;
+  kill)     shift; cmd_kill "$@" ;;
+  guard-ok) sweep_running && { echo "sweep-active"; exit 1; } || { echo "clear"; exit 0; } ;;
+  *) echo "usage: scripts/lab <status|build|kill [-9]|ports|guard-ok>"; exit 1 ;;
+esac

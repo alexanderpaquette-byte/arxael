@@ -26,6 +26,18 @@ class MergeService(
     @Volatile private var orchestrator: MergeOrchestrator? = null
     @Volatile private var registeredRepo: String? = null
 
+    // register() runs the cold Gradle module-graph probe AND a dep-cache warm, each bounded by
+    // acquireTimeoutCapMs (10 min) and run sequentially inside the @Synchronized monitor — so a SYNCHRONOUS
+    // register can block far past a client timeout and read as a FAILURE to a client whose timeout fires first
+    // (the register has in fact succeeded). registerAsync() runs the UNCHANGED register() on a background
+    // thread and tracks the lifecycle here; the HTTP handler acks immediately and clients poll
+    // GET /merge/status for `registerState`. States: idle -> registering -> ready | failed.
+    @Volatile private var registerState: String = "idle"
+    @Volatile private var registerError: String? = null
+    private val registerExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+        Thread(r, "arxael-register").apply { isDaemon = true }
+    }
+
     // Bound how many /merge/pr long-polls can BLOCK at once. They run on the shared HTTP thread pool
     // (sized ~maxConcurrent*2+4); the documented agent land-loop long-polls /merge/pr, so without a cap a
     // fleet of waiters could park every HTTP thread and starve /invoke + /health (a friendly-agent DoS).
@@ -192,8 +204,43 @@ class MergeService(
 
     fun isRegistered(): Boolean = orchestrator != null
 
+    /**
+     * Non-blocking register. Validates the cheap, fatal precondition SYNCHRONOUSLY (repo has a
+     * `main` branch) so a bad request still fails fast (the caller maps it to 422), then runs the full,
+     * UNCHANGED [register] — including the cold Gradle module-graph probe + dep-cache warm — on a background
+     * thread so the HTTP caller is never blocked on cold Gradle. Progress is observable via [registerStatus]
+     * (`registering` -> `ready` | `failed`), surfaced on GET /merge/status. Re-register supersedes cleanly:
+     * the single-thread executor serializes, and [register]'s first act is teardown(), so the last wins.
+     */
+    fun registerAsync(repo: String, forwardDeps: Map<String, Set<String>>, thresholdSpec: Int, gateCount: Int) {
+        // Fatal, cheap precondition checked on the caller's thread so a bad repo still returns immediately.
+        require(GitOps.ok(Path.of(repo), "rev-parse", "--verify", "main")) { "repo '$repo' has no 'main' branch" }
+        registerState = "registering"
+        registerError = null
+        events.emit("merge_register_started", mapOf("repo" to repo))
+        registerExecutor.submit {
+            try {
+                val reg = register(repo, forwardDeps, thresholdSpec, gateCount)
+                registerState = "ready"
+                events.emit("merge_register_ready", mapOf("repo" to repo, "modules" to reg.modules))
+            } catch (e: Exception) {
+                // publish the reason BEFORE the terminal state: both are @Volatile and read non-atomically by
+                // registerStatus(), so a poll must never observe "failed" with a null error.
+                registerError = e.message ?: e::class.simpleName
+                registerState = "failed"
+                events.emit("merge_register_failed", mapOf("repo" to repo, "error" to (e.message ?: "")))
+            }
+        }
+    }
+
+    /** (state, error?) for GET /merge/status — idle | registering | ready | failed. */
+    fun registerStatus(): Pair<String, String?> = registerState to registerError
+
     @Synchronized
-    fun shutdown() = teardown()
+    fun shutdown() {
+        registerExecutor.shutdown()
+        teardown()
+    }
 
     /** Run [block] but give up after [ms] (returns [onTimeout]) so a hung gradle Tooling-API call can't hold
      *  register's monitor forever. The abandoned thread is a daemon (a leaked gradle daemon is reaped later). */

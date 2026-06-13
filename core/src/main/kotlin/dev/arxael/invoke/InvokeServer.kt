@@ -89,7 +89,7 @@ class InvokeServer(
             ex, code,
             """
             {
-              "service": "arxael-dev-kit",
+              "service": "arxael",
               "what": "One warm, bounded build/test executor that many trusted local agents share to work on ONE project: branch -> test -> PR -> merge to main, fast and without conflicts.",
               "ifYouAreAnAgent": "To land your change: (1) make your branch IN THE SHARED HUB REPO (create your worktree off the hub path that 'arxael up' printed, or 'git push <hub> <branch>') — a branch the hub never received is reported state 'missing'; (2) POST /invoke to build/test your worktree; (3) when green, POST /merge/submit with your branch; (4) GET /merge/pr?branch=<b>&wait=30 to await YOUR outcome (landed/reverted/bounced) instead of racing the shared landed counter. Tests run on a shared bounded executor, so expect to queue under load (status OVERLOADED = retry later).",
               "loopbackOnly": true,
@@ -101,8 +101,8 @@ class InvokeServer(
                 {"method":"POST","path":"/warmup","body":{"adapter":"gradle","worktree":"/abs/path/to/checkout"},"desc":"optional: pre-spawn the build daemon so your first build is warm"},
                 {"method":"POST","path":"/merge/submit","body":{"branch":"my-feature","module":":app","agentId":"you"},"desc":"submit a branch-tested PR to land on main; the branch must exist in the hub repo; module is its Gradle path (optional — auto-inferred from the diff when omitted)"},
                 {"method":"GET","path":"/merge/pr?branch=my-feature&wait=30","desc":"YOUR PR's outcome: state queued|gating|landed|reverted|bounced|missing|error (+terminal,commit,reason). wait=<sec> long-polls until terminal. The reliable 'did it land?' check."},
-                {"method":"GET","path":"/merge/status","desc":"merge-queue stats: landed, reverts, bouncedSemantic/Textual, branchMissing, errors, inFlightGates, queueDepth"},
-                {"method":"POST","path":"/merge/register","body":{"repo":"/abs/path/to/bare.git"},"desc":"operator-only: register the project; usually done for you by 'scripts/arxael up'"}
+                {"method":"GET","path":"/merge/status","desc":"merge-queue stats: landed, reverts, bouncedSemantic/Textual, branchMissing, errors, inFlightGates, queueDepth; plus registerState (idle|registering|ready|failed) for the async register"},
+                {"method":"POST","path":"/merge/register","body":{"repo":"/abs/path/to/bare.git"},"desc":"operator-only: register the project; usually done for you by 'scripts/arxael up'. Returns 202 immediately (a bad repo is 422); the cold Gradle probe runs async — poll /merge/status until registerState=ready before submitting"}
               ],
               "docs": "AGENTS.md (start here), docs/SETUP.md, docs/ARCHITECTURE.md"
             }
@@ -171,12 +171,16 @@ class InvokeServer(
         val body = readBody(ex) ?: return respond(ex, 413, """{"ok":false,"error":"request body too large"}""")
         val spec = try { json.decodeFromString<MergeRegisterSpec>(body) }
             catch (e: Exception) { return respond(ex, 400, """{"ok":false,"error":${jsonStr("bad request: ${e.message}")}}""") }
-        val reg = try {
-            merge.register(spec.repo, spec.forwardDeps.mapValues { it.value.toSet() }, spec.threshold, spec.gateWorktrees)
+        // Ack immediately and run the cold Gradle module-graph probe + dep-cache warm in the
+        // background, so a cold first register can't block the caller past a client timeout and read as a
+        // failure. The cheap fatal precondition (repo has `main`) is still checked synchronously -> 422.
+        // The client polls GET /merge/status for registerState (registering -> ready | failed).
+        try {
+            merge.registerAsync(spec.repo, spec.forwardDeps.mapValues { it.value.toSet() }, spec.threshold, spec.gateWorktrees)
         } catch (e: IllegalArgumentException) {
             return respond(ex, 422, """{"ok":false,"error":${jsonStr(e.message ?: "register failed")}}""")
         }
-        respond(ex, 200, """{"ok":true,"repo":${jsonStr(reg.repo)},"modules":${reg.modules},"gateWorktrees":${reg.gateWorktrees},"threshold":${reg.threshold}}""")
+        respond(ex, 202, """{"ok":true,"state":"registering","repo":${jsonStr(spec.repo)}}""")
     }
 
     private fun handleMergeSubmit(ex: HttpExchange, merge: MergeService) {
@@ -195,14 +199,30 @@ class InvokeServer(
         return if (merge.submit(spec.branch, spec.module, spec.agentId)) {
             respond(ex, 200, """{"ok":true,"queued":${jsonStr(spec.branch)}}""")
         } else {
-            respond(ex, 409, """{"ok":false,"error":"no project registered — run 'scripts/arxael up' inside the project (or POST /merge/register)"}""")
+            // Distinguish "still registering (cold first build)" from "never registered" so a client that
+            // submits right after an async register gets a clear retry signal instead of a misleading error.
+            val msg = if (merge.registerStatus().first == "registering") {
+                "project is still registering (first build is cold) — poll GET /merge/status until registerState=ready, then resubmit"
+            } else {
+                "no project registered — run 'scripts/arxael up' inside the project (or POST /merge/register)"
+            }
+            respond(ex, 409, """{"ok":false,"error":${jsonStr(msg)}}""")
         }
     }
 
     private fun handleMergeStatus(ex: HttpExchange, merge: MergeService) {
         if (ex.requestMethod != "GET") return respond(ex, 405, """{"error":"GET only"}""")
-        val s = merge.status() ?: return respond(ex, 200, """{"ok":true,"registered":false}""")
-        val snap = s.toMutableMap(); snap["ok"] = true; snap["registered"] = true
+        // Surface the async register lifecycle on BOTH the not-yet-registered and registered paths, so a
+        // client can poll registerState (idle | registering | ready | failed) to know when it can submit.
+        val (regState, regErr) = merge.registerStatus()
+        val s = merge.status()
+        if (s == null) {
+            val m = linkedMapOf<String, Any>("ok" to true, "registered" to false, "registerState" to regState)
+            regErr?.let { m["registerError"] = it }
+            return respond(ex, 200, json.encodeToString(mapToJson(m)))
+        }
+        val snap = s.toMutableMap(); snap["ok"] = true; snap["registered"] = true; snap["registerState"] = regState
+        regErr?.let { snap["registerError"] = it }
         respond(ex, 200, json.encodeToString(mapToJson(snap)))
     }
 

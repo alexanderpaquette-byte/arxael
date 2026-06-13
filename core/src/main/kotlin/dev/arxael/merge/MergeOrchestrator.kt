@@ -74,30 +74,30 @@ class MergeOrchestrator(
     private val conflictEwmaAlpha: Double = CONFLICT_EWMA_ALPHA,
     private val highConflictRate: Double = HIGH_CONFLICT_RATE,
     /** H12 wall-clock decay time-constant (seconds) for the conflict signal. The per-outcome EWMA's responsiveness
-     *  scales with THROUGHPUT, so at low merge volume it can't track time-based regime shifts (iter22 n5: stuck
-     *  optimistic through a low-conflict lull — too few new lands to decay it). >0 also decays the signal toward 0
+     *  scales with THROUGHPUT, so at low merge volume it can't track time-based regime shifts (a low-conflict lull
+     *  leaves too few new lands to decay it). >0 also decays the signal toward 0
      *  over wall-time (exp(-dt/tau)), so a quiet/low-conflict lull pulls it back toward batch even without outcomes.
      *  0 = pure per-outcome EWMA (legacy). Inert at high volume (decay between dense outcomes is negligible). */
     private val conflictDecayTauS: Double = 0.0,
     /** H13 optimistic wedge-recovery guard. The batched path has a "main-already-red" guard (C5) that re-queues
      *  innocent PRs instead of blaming them when a gate reds over a scope they didn't break; the OPTIMISTIC path
      *  lacked it — so once one un-revertable bad commit wedged main red, every later PR gated red (inheriting the
-     *  broken main), got wrongly reverted/errored, and throughput CASCADED to 0 (iter22 n25: opt 2.5, errors pile).
+     *  broken main), got wrongly reverted/errored, and throughput CASCADED to 0.
      *  With this on, an optimistic red first checks whether the PARENT (main just before this commit) was ALREADY
      *  red over the failed scope; if so the PR is innocent -> re-queue (don't revert), so a stuck bad commit
      *  degrades gracefully instead of collapsing. false = legacy (always revert on red). */
-    private val optimisticWedgeGuard: Boolean = true,  // H13 correctness guard: re-queue innocent PRs that inherited an already-wedged main (don't mis-revert/cascade). Throughput-NEUTRAL on clean counts (iter28; the iter23 "win" was the double-count bug), so default ON for the free correctness, negligible cost in branch-gated prod.
+    private val optimisticWedgeGuard: Boolean = true,  // H13 correctness guard: re-queue innocent PRs that inherited an already-wedged main (don't mis-revert/cascade). Throughput-NEUTRAL on clean counts, so default ON for the free correctness, negligible cost in branch-gated prod.
     /** H15 load-aware routing: optimistic's instant-land edge requires a FREE async-gate worktree to parallel-verify.
      *  When the gate pool is SATURATED (inFlightGates >= capacity) optimistic is gate-PROCESSING-bound — no edge over
      *  batch, which amortizes the same limited gates — so route BATCH even at high conflict. Without this, conflict-
-     *  adaptive routing flips optimistic into a pool-bound regime where it LOSES (iter25 n25: opt 11.2 << batch 28.3,
-     *  auto 25.2 < batch). Self-regulating: optimistic while the pool has room, batch once it fills. false = conflict-
+     *  adaptive routing flips optimistic into a pool-bound regime where it LOSES (optimistic underperforms batch once
+     *  the gate pool is the bottleneck). Self-regulating: optimistic while the pool has room, batch once it fills. false = conflict-
      *  only routing (the H7' behavior). */
     private val loadAwareRouting: Boolean = false,
     /** H15 saturation FRACTION: the optimistic flip is suppressed once inFlightGates >= ceil(fraction * gateCapacity).
      *  1.0 = "fully saturated" (legacy binary trigger). The instant-land edge actually erodes BEFORE every worktree is
      *  busy (new verifies start queueing the moment the pool runs low), so a fraction < 1.0 (e.g. 0.5) routes batch
-     *  earlier and may protect the pool-bound mid-scales (n25/n60) better. Only consulted when loadAwareRouting=true. */
+     *  earlier and may protect the pool-bound mid-scales better. Only consulted when loadAwareRouting=true. */
     private val loadAwareFraction: Double = 1.0,
     /** H8 conflict-aware batch composition: when forming a batch, greedily pick PRs whose changed-file sets are
      *  pairwise DISJOINT (in FIFO order), deferring any PR with a proven file-overlap to a later batch. The
@@ -108,44 +108,44 @@ class MergeOrchestrator(
      *  preserves amortization. false = legacy FIFO drain. */
     private val disjointBatch: Boolean = false,
     /** H16 revert-health guard: a revert that CONFLICTS (the bad commit can't be undone — main stays red) is the first
-     *  domino of the revert-conflict cascade (iter25 n60/seed4: opt collapsed 23.3->9.3 as later optimistic lands piled
-     *  onto the un-revertable red main and their reverts conflicted in turn). On any such revert-failure, force BATCH
+     *  domino of the revert-conflict cascade (optimistic collapses as later optimistic lands pile
+     *  onto the un-revertable red main and their reverts conflict in turn). On any such revert-failure, force BATCH
      *  routing for [revertHealthCooldownMs] so new PRs gate-BEFORE-landing instead of stacking more un-revertable lands —
-     *  stopping the cascade at the source. Unlike H15 (pool-occupancy, which mis-fires: iter25 n120 opt-heavy WON
-     *  saturated), this keys on the ACTUAL wedge signal, so it leaves the healthy optimistic wins (n5,n120) untouched.
+     *  stopping the cascade at the source. Unlike H15 (pool-occupancy, which mis-fires when an opt-heavy load WINS while
+     *  saturated), this keys on the ACTUAL wedge signal, so it leaves the healthy optimistic wins untouched.
      *  false = legacy (no cooldown). */
     private val revertHealthGuard: Boolean = false,
     private val revertHealthCooldownMs: Long = 30_000,
     /** H18 gate-fill routing — the clean-production routing rule that REPLACES the mis-signed H7'(conflict)/H15(load)
-     *  proxies. iter28 (branch-gated, correct counts) showed optimistic's PARALLEL async-gating out-throughputs batch's
-     *  SERIALIZED integration whenever there's enough pending work to fill the gate pool (opt wins n25+), and batch wins
-     *  only when load can't fill it (n5). So route OPTIMISTIC iff (queueDepth + inFlightGates) >= gateCapacity. The sum
+     *  proxies. Optimistic's PARALLEL async-gating out-throughputs batch's
+     *  SERIALIZED integration whenever there's enough pending work to fill the gate pool, and batch wins
+     *  only when load can't fill it. So route OPTIMISTIC iff (queueDepth + inFlightGates) >= gateCapacity. The sum
      *  is MODE-ROBUST: under batch a high load backs up the queue; under optimistic it fills the gates — either way the
      *  sum is high at high load, so it can't lock into one mode. Self-scales per box via gateCapacity (the goal). The
      *  H16 revert-health guard, if also on, OVERRIDES to batch when main is wedged (the rare non-gated edge case where
      *  the proxies' correctness concern still applies). false = use the legacy conflict/load path. */
     private val gateFillRouting: Boolean = false,
     /** H18 fill threshold as a FRACTION of gateCapacity. Route optimistic when (queueDepth+inFlightGates) >=
-     *  ceil(gateFillFrac * gateCapacity). 1.0 = "pool full" (the original). iter31 n25 showed pending HOVERS at
-     *  gateCapacity so the 1.0 trigger FLAPS batch/opt -> a mix that's ~8% short of pure-opt; a fraction < 1.0 routes
-     *  optimistic at lower backlog to capture the opt win more fully at moderate load (the gate-fill crossover). Swept
-     *  0.25..2.0 in iter32. Only consulted when gateFillRouting=true. */
+     *  ceil(gateFillFrac * gateCapacity). 1.0 = "pool full" (the original). At moderate load pending HOVERS at
+     *  gateCapacity so the 1.0 trigger FLAPS batch/opt -> a mix that falls short of pure-opt; a fraction < 1.0 routes
+     *  optimistic at lower backlog to capture the opt win more fully at moderate load (the gate-fill crossover).
+     *  Only consulted when gateFillRouting=true. */
     private val gateFillFrac: Double = 1.0,
     /** H19 gate-fill HYSTERESIS (dwell band). The bare gate-fill trigger flips route the instant the live signal
-     *  (queueDepth+inFlightGates) crosses gateFillThreshold; when the load SITS AT the threshold (the 32c/n25
-     *  under-loaded corner) it FLAPS, so a ~16% batch fraction fragments an otherwise-optimistic flow and auto falls
+     *  (queueDepth+inFlightGates) crosses gateFillThreshold; when the load SITS AT the threshold (the under-loaded
+     *  corner) it FLAPS, so a small batch fraction fragments an otherwise-optimistic flow and auto falls
      *  BELOW both pure modes. Hysteresis makes the regime STICKY: enter optimistic at signal>=gateFillThreshold, but
      *  leave it only when signal drops below gateFillThreshold/2 — so once committed to opt the flow stays opt and
-     *  doesn't fragment. Distinct from gateFillFrac (which only SHIFTS the trigger; iter32 showed shifting is
+     *  doesn't fragment. Distinct from gateFillFrac (which only SHIFTS the trigger; shifting is
      *  irrelevant — stickiness, not position, is the missing lever). false = exact legacy binary trigger. */
     private val gateFillHysteresis: Boolean = false,
     /** H23 batchCap-AWARE gate-fill. Opt's throughput ceiling ~ gateCapacity (parallel async gates); batch's ~ batchCap
      *  (clean PRs amortized per single gate). When batchCap DOMINATES the pool (batchCap > [batchCapDominanceFactor] *
      *  gateCapacity) batch amortization beats parallel opt at EVERY load, so gate-fill's "deep queue -> opt" signal is
-     *  inverted (a deep queue is when batch amortizes MOST). iter36 proved it: at bc64/pool16 (4x) batch 114 >> opt 69,
-     *  yet bare gate-fill routed a partial-opt mix that FRAGMENTED the big batches down to ~opt (67, -41% vs batch).
+     *  inverted (a deep queue is when batch amortizes MOST). When batchCap dominates, batch decisively out-throughputs
+     *  optimistic, yet bare gate-fill routes a partial-opt mix that FRAGMENTS the big batches down to ~opt.
      *  When dominant -> force batch (return 0): no opt fraction, no fragmentation, recovers pure-batch. Crossover factor
-     *  ~2 from the bc16(=1x,opt wins)/bc64(=4x,batch wins) interpolation. false = bare gate-fill (correct at batchCap<=pool). */
+     *  ~2 from the (batchCap≈pool: opt wins) / (batchCap≫pool: batch wins) interpolation. false = bare gate-fill (correct at batchCap<=pool). */
     private val batchCapAware: Boolean = false,
     private val batchCapDominanceFactor: Double = 2.0,
     /** H17 route-bandit — the MEASURE-don't-proxy router. Every heuristic (conflict H7', load H15, gate-fill H18) is a
@@ -334,11 +334,11 @@ class MergeOrchestrator(
     /** H7': the closure-size threshold to use NOW. Static (router.threshold = cores-derived) unless conflict-adaptive,
      *  in which case it's driven by the RECENT (windowed/EWMA) textual-bounce rate: below [HIGH_CONFLICT_RATE] -> 0
      *  (BATCH — amortize clean PRs, the safe warmup default); at/above it -> [conflictOptimisticThreshold] (OPTIMISTIC,
-     *  where instant parallel lands out-run the batch's bounce cascade). WINDOWED, not cumulative: iter17 proved the
+     *  where instant parallel lands out-run the batch's bounce cascade). WINDOWED, not cumulative: the
      *  lifetime ratio LAGS — at high agent depth the textual-bounce rate BUILDS over the run (queue deepens -> fuller
      *  batches -> more within-batch collisions), so a cumulative average stays under threshold for most of the run and
-     *  never flips (H7 missed the a100 optimistic win, staying batch at a measured 21->31% while the regime was really
-     *  ~53%). The EWMA tracks the CURRENT regime and flips within ~1/alpha outcomes of conflict rising. */
+     *  never flips (H7 missed the high-conflict optimistic win, staying batch on a rising bounce rate while the regime was really
+     *  high-conflict). The EWMA tracks the CURRENT regime and flips within ~1/alpha outcomes of conflict rising. */
     private fun effectiveThreshold(): Int {
         // H17 route-bandit: measure realized throughput per route and route the empirical winner (no proxy). Takes
         // precedence — it's the measure-don't-assume router that the heuristics only approximate.
@@ -496,7 +496,7 @@ class MergeOrchestrator(
         // Count a land ONLY when it actually MOVED main. The H13 wedge-guard requeue (opt-main-already-red) re-routes
         // an ALREADY-LANDED innocent PR back through here; mergeOnto is then a no-op ("Already up to date" -> true),
         // so without this guard mLanded/mOptLanded would double-count the same physical land and INFLATE
-        // merges_per_min in exactly the wedge/high-conflict regime (QA-found, metric-invalidating). The async re-gate
+        // merges_per_min in exactly the wedge/high-conflict regime (invalidating the metric). The async re-gate
         // below still runs (that's the point of the requeue) — only the counters are gated on a real advance.
         if (advanced) {
             mLanded.incrementAndGet(); mOptLanded.incrementAndGet(); recordTtl(pr); recordConflictOutcome(bounced = false)
@@ -585,7 +585,7 @@ class MergeOrchestrator(
             if (pr.gateAttempts < MAX_GATE_RETRIES) {
                 inFlightGates.incrementAndGet() // the re-test is still in-flight; balances this task's finally
                 // If the pool is shutting down, submit() throws RejectedExecutionException AFTER we incremented ->
-                // roll the count back, else a leaked inFlightGates would make H15 force-batch forever (QA finding).
+                // roll the count back, else a leaked inFlightGates would make H15 force-batch forever.
                 try {
                     gatePool.submit { asyncGate(pr.copy(gateAttempts = pr.gateAttempts + 1), commit) }
                     events.emit("merge_retry", mapOf("branch" to pr.branch, "attempt" to pr.gateAttempts + 1, "why" to "gate-inconclusive"))
@@ -664,9 +664,9 @@ class MergeOrchestrator(
         return if (revertFromMain(wt, commit)) {
             // mLanded is NET (decremented on revert); mOptLanded is intentionally GROSS — a cumulative count of
             // optimistic lands EVER (a routing-activity measure), asserted by the orchestrator tests ("all three
-            // start by landing optimistically"). So do NOT decrement mOptLanded here. (The earlier double-count bug
-            // was the no-op RE-merge re-counting a land; that's fixed in landOptimistic's `advanced` gate, which
-            // applies to gross too — a no-op re-merge is not a distinct land.)
+            // start by landing optimistically"). So do NOT decrement mOptLanded here. (A no-op RE-merge must not
+            // re-count a land; landOptimistic's `advanced` gate handles that, and it applies to gross too —
+            // a no-op re-merge is not a distinct land.)
             mReverts.incrementAndGet(); mLanded.decrementAndGet()
             events.emit("merge_revert", mapOf("branch" to pr.branch, "module" to pr.module, "commit" to commit))
             true
@@ -1065,7 +1065,7 @@ class MergeOrchestrator(
 
         /** H7' pure decision: same rule, but on the RECENT (EWMA) bounce rate instead of the lifetime ratio.
          *  [recentRate] is the orchestrator's EWMA of recent merge outcomes (1=textual bounce, 0=land); [totalSamples]
-         *  is the lifetime outcome count, used only for the warmup gate. iter17 showed the lifetime ratio LAGS (the
+         *  is the lifetime outcome count, used only for the warmup gate. The lifetime ratio LAGS (the
          *  bounce rate builds over a run, so the cumulative average never crosses the threshold in time); the windowed
          *  rate tracks the current regime and flips promptly. Pure + unit-testable. */
         fun conflictThresholdWindowed(recentRate: Double, totalSamples: Long, optimisticThr: Int,

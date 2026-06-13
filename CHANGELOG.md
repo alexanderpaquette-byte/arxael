@@ -3,6 +3,25 @@
 All notable changes to Arxael. Versions follow [SemVer](https://semver.org/) (pre-1.0: minor =
 notable change, patch = fix).
 
+## [1.3.0] — 2026-06-13
+
+Reliability + responsiveness fixes for long-running fleets:
+
+- **`/merge/register` is now async.** Registering a project returns `202 {state:"registering"}` immediately
+  instead of blocking on the first cold Gradle probe + dependency-cache warm — which could exceed a client's
+  timeout and read as a failure even though it had succeeded. A bad repo (no `main`) is still a synchronous
+  `422`. `GET /merge/status` now exposes `registerState` (idle | registering | ready | failed); `arxael up`
+  polls it with a "first build is cold" message, and a submit before the project is ready gets a clear retry
+  signal instead of "not registered".
+- **Orphaned per-worktree Gradle homes are reclaimed proactively.** The on-disk output-base GC now runs
+  periodically from the watchdog — off the request path, throttled to once a minute, with its 10-minute
+  create-window TTL intact — instead of only under warm-pool cap pressure. Short-lived branch worktrees and
+  fault-evicted servers can no longer accumulate stale Gradle homes on disk; pinned merge-gate homes are never
+  swept.
+- **The daemon reaper now also reaps idle Kotlin compile daemons** (`KotlinCompileDaemon`) — Kotlin builds
+  spawn them and they idle out on a longer timeout than Gradle's own, so under a heavy fleet they otherwise
+  accumulated.
+
 ## [1.2.0] — 2026-06-12
 
 Version introspection + update awareness — **notify-only, never auto-update** (see LIMITATIONS "Network access"):

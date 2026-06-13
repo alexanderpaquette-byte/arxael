@@ -57,12 +57,12 @@ data class BoxConfig(
      *  per-worktree build-cache store traffic from the shared-user-home lock ceiling. */
     val buildCache: Boolean,
     /** Give each worktree its OWN Gradle user home, eliminating the shared-user-home cross-process cache
-     *  lock that capped concurrency at ~8 builds (Phase 0). Default ON: the lock ceiling is
+     *  lock that capped concurrency at ~8 builds. Default ON: the lock ceiling is
      *  the dominant density limiter, and the [DepCacheConsolidator][dev.arxael.merge.DepCacheConsolidator]
      *  + a daemon-global read-only dep cache ([liveRoDepCache]) make it safe — per-worktree builds download
      *  into their own home, and freshly-downloaded deps are folded into the shared RO cache so re-downloads
      *  converge to ~zero (no Maven 429 at steady state). Set ARXAEL_PER_WORKTREE_HOME=false to restore the
-     *  shared home (the old D4 behavior). */
+     *  shared home (the pre-per-worktree default). */
     val perWorktreeHome: Boolean,
     /** Local Gradle installation used by the gradle adapter (offline, deterministic). */
     val gradleHome: Path,
@@ -133,7 +133,7 @@ data class BoxConfig(
     val maxVerifyLagMs: Long = 25_000,
     /** H7 conflict-adaptive routing (ARXAEL_CONFLICT_ADAPTIVE_ROUTING): derive the batch-vs-optimistic threshold from
      *  the measured textual-bounce rate instead of cores. Low conflict -> batch (amortize clean PRs); high conflict ->
-     *  optimistic. The routing optimum is driven by conflict rate, not cores (proven iter9/iter10). */
+     *  optimistic. The routing optimum is driven by conflict rate, not cores. */
     val conflictAdaptiveRouting: Boolean = false,
     /** The "optimistic" closure-threshold H7 ramps to under high conflict (= the fast-mode value). */
     val conflictOptimisticThreshold: Int = 16,
@@ -161,16 +161,16 @@ data class BoxConfig(
     val revertHealthGuard: Boolean = false,
     val revertHealthCooldownMs: Long = 30_000,
     /** H18 gate-fill routing (ARXAEL_GATE_FILL_ROUTING): route optimistic when (queueDepth+inFlightGates) >=
-     *  gateCapacity, else batch. The clean-production routing rule (iter28) that replaces the inverted conflict/load
+     *  gateCapacity, else batch. The clean-production routing rule that replaces the inverted conflict/load
      *  proxies; self-scales per box via gateCapacity. Pair with revertHealthGuard for the non-gated wedge edge case. */
     val gateFillRouting: Boolean = false,
     /** H18 fill threshold fraction (ARXAEL_GATE_FILL_FRAC): route opt when pending >= ceil(frac*gateCapacity). 1.0 = pool full. */
     val gateFillFrac: Double = 1.0,
     /** H19 gate-fill hysteresis (ARXAEL_GATE_FILL_HYSTERESIS): sticky regime — leave opt only when pending < thr/2, so
-     *  the route doesn't flap when load sits at the threshold (the 32c/n25 valley). false = legacy binary trigger. */
+     *  the route doesn't flap when load sits at the threshold. false = legacy binary trigger. */
     val gateFillHysteresis: Boolean = false,
     /** H23 batchCap-aware gate-fill (ARXAEL_BATCHCAP_AWARE): force batch when batchCap > factor*gateCapacity (batch
-     *  amortization dominates parallel opt). Closes the bc64 -41% mis-route. false = bare gate-fill. */
+     *  amortization dominates parallel opt). Closes the large-batchCap mis-route. false = bare gate-fill. */
     val batchCapAware: Boolean = false,
     val batchCapDominanceFactor: Double = 2.0,
     /** H17 route-bandit (ARXAEL_BANDIT_ROUTING): measure net throughput per route over a sliding window and route the
@@ -383,7 +383,7 @@ data class BoxConfig(
             val loadAwareFraction = (env("ARXAEL_LOAD_AWARE_FRACTION")?.toDoubleOrNull() ?: 1.0).coerceIn(0.01, 1.0)
             val revertHealthGuard = env("ARXAEL_REVERT_HEALTH_GUARD")?.trim()?.lowercase() in setOf("1","true","yes")
             val revertHealthCooldownMs = maxOf(0L, env("ARXAEL_REVERT_HEALTH_COOLDOWN_MS")?.toLongOrNull() ?: 30_000L)
-            // SHIP v1.0.3: balanced (=auto) is now SELF-TUNING by default — gate-fill load-adaptive routing (H18) with
+            // balanced (=auto) is SELF-TUNING by default — gate-fill load-adaptive routing (H18) with
             // the valley fix (H19 hysteresis) and the batchCap/tiny-pool fix (H23). conservative/fast keep their static
             // thresholds (gateFillRouting stays false for them). Explicit env still overrides either way.
             val gffEnv = env("ARXAEL_GATE_FILL_ROUTING")?.trim()?.lowercase()

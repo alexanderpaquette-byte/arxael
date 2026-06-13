@@ -3,193 +3,640 @@
     {
       "name": "DS_PROMETHEUS",
       "label": "Prometheus",
-      "description": "The Prometheus scraping arxael-dev-kit /metrics",
+      "description": "The Prometheus scraping arxael /metrics",
       "type": "datasource",
       "pluginId": "prometheus",
       "pluginName": "Prometheus"
     }
   ],
-  "title": "arxael-dev-kit",
-  "uid": "arxael-dev-kit",
-  "tags": ["arxael", "build", "merge"],
+  "title": "arxael",
+  "uid": "arxael",
+  "tags": [
+    "arxael",
+    "build",
+    "merge"
+  ],
   "timezone": "browser",
   "schemaVersion": 39,
   "version": 1,
   "refresh": "5s",
-  "time": { "from": "now-1h", "to": "now" },
-  "templating": { "list": [] },
-  "annotations": { "list": [] },
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": []
+  },
   "panels": [
     {
       "id": 1,
       "title": "Daemon up",
       "type": "stat",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
-      "fieldConfig": { "defaults": { "mappings": [ { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } } ], "color": { "mode": "thresholds" } } },
-      "targets": [ { "expr": "arxael_up", "refId": "A" } ]
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "DOWN",
+                  "color": "red"
+                },
+                "1": {
+                  "text": "UP",
+                  "color": "green"
+                }
+              }
+            }
+          ],
+          "color": {
+            "mode": "thresholds"
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "arxael_up",
+          "refId": "A"
+        }
+      ]
     },
     {
       "id": 2,
       "title": "In-flight builds",
       "type": "stat",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 0 },
-      "targets": [ { "expr": "arxael_executor_in_flight", "refId": "A" } ]
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 0
+      },
+      "targets": [
+        {
+          "expr": "arxael_executor_in_flight",
+          "refId": "A"
+        }
+      ]
     },
     {
       "id": 3,
       "title": "Waiting (demand)",
       "type": "stat",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 0 },
-      "targets": [ { "expr": "arxael_executor_waiting", "refId": "A" } ]
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 8,
+        "y": 0
+      },
+      "targets": [
+        {
+          "expr": "arxael_executor_waiting",
+          "refId": "A"
+        }
+      ]
     },
     {
       "id": 4,
       "title": "Landed (total)",
       "type": "stat",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 0 },
-      "targets": [ { "expr": "arxael_merge_landed_total", "refId": "A" } ]
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 12,
+        "y": 0
+      },
+      "targets": [
+        {
+          "expr": "arxael_merge_landed_total",
+          "refId": "A"
+        }
+      ]
     },
     {
       "id": 5,
       "title": "Reverts (total)",
       "type": "stat",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 0 },
-      "fieldConfig": { "defaults": { "thresholds": { "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] }, "color": { "mode": "thresholds" } } },
-      "targets": [ { "expr": "arxael_merge_reverts_total", "refId": "A" } ]
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 16,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "arxael_merge_reverts_total",
+          "refId": "A"
+        }
+      ]
     },
     {
       "id": 6,
       "title": "Recent errors",
       "type": "stat",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 0 },
-      "fieldConfig": { "defaults": { "thresholds": { "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 1 } ] }, "color": { "mode": "thresholds" } } },
-      "targets": [ { "expr": "arxael_events_recent_error_count", "refId": "A" } ]
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 20,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "arxael_events_recent_error_count",
+          "refId": "A"
+        }
+      ]
     },
     {
       "id": 10,
       "title": "Concurrency: target vs ceiling vs in-flight",
       "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
-      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 } } },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10
+          }
+        }
+      },
       "targets": [
-        { "expr": "arxael_executor_concurrency_target", "legendFormat": "target", "refId": "A" },
-        { "expr": "arxael_executor_max_concurrent", "legendFormat": "ceiling", "refId": "B" },
-        { "expr": "arxael_executor_in_flight", "legendFormat": "in-flight", "refId": "C" },
-        { "expr": "arxael_executor_waiting", "legendFormat": "waiting", "refId": "D" }
+        {
+          "expr": "arxael_executor_concurrency_target",
+          "legendFormat": "target",
+          "refId": "A"
+        },
+        {
+          "expr": "arxael_executor_max_concurrent",
+          "legendFormat": "ceiling",
+          "refId": "B"
+        },
+        {
+          "expr": "arxael_executor_in_flight",
+          "legendFormat": "in-flight",
+          "refId": "C"
+        },
+        {
+          "expr": "arxael_executor_waiting",
+          "legendFormat": "waiting",
+          "refId": "D"
+        }
       ]
     },
     {
       "id": 11,
       "title": "Memory: learned footprint vs mem bound",
       "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
-      "fieldConfig": { "defaults": { "unit": "decmbytes", "custom": { "drawStyle": "line", "fillOpacity": 10 } } },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "decmbytes",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10
+          }
+        }
+      },
       "targets": [
-        { "expr": "arxael_governor_learned_footprint_mb", "legendFormat": "learned per-build MB", "refId": "A" },
-        { "expr": "arxael_executor_per_build_footprint_mb", "legendFormat": "configured per-build MB", "refId": "B" }
+        {
+          "expr": "arxael_governor_learned_footprint_mb",
+          "legendFormat": "learned per-build MB",
+          "refId": "A"
+        },
+        {
+          "expr": "arxael_executor_per_build_footprint_mb",
+          "legendFormat": "configured per-build MB",
+          "refId": "B"
+        }
       ]
     },
     {
       "id": 12,
       "title": "Merge throughput (landed/min)",
       "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
-      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "fillOpacity": 10 } } },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 12
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10
+          }
+        }
+      },
       "targets": [
-        { "expr": "rate(arxael_merge_landed_total[1m]) * 60", "legendFormat": "landed/min", "refId": "A" },
-        { "expr": "rate(arxael_merge_opt_landed_total[1m]) * 60", "legendFormat": "optimistic/min", "refId": "B" },
-        { "expr": "rate(arxael_merge_batch_landed_total[1m]) * 60", "legendFormat": "batched/min", "refId": "C" }
+        {
+          "expr": "rate(arxael_merge_landed_total[1m]) * 60",
+          "legendFormat": "landed/min",
+          "refId": "A"
+        },
+        {
+          "expr": "rate(arxael_merge_opt_landed_total[1m]) * 60",
+          "legendFormat": "optimistic/min",
+          "refId": "B"
+        },
+        {
+          "expr": "rate(arxael_merge_batch_landed_total[1m]) * 60",
+          "legendFormat": "batched/min",
+          "refId": "C"
+        }
       ]
     },
     {
       "id": 13,
       "title": "Time-to-land p50 (ms) & in-flight gates",
       "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
-      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 } } },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 12
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10
+          }
+        }
+      },
       "targets": [
-        { "expr": "arxael_merge_p50_time_to_land_ms", "legendFormat": "p50 time-to-land (ms)", "refId": "A" },
-        { "expr": "arxael_merge_in_flight_gates", "legendFormat": "in-flight gates", "refId": "B" },
-        { "expr": "arxael_merge_queue_depth", "legendFormat": "queue depth (backlog)", "refId": "C" },
-        { "expr": "arxael_merge_processing", "legendFormat": "processing", "refId": "D" }
+        {
+          "expr": "arxael_merge_p50_time_to_land_ms",
+          "legendFormat": "p50 time-to-land (ms)",
+          "refId": "A"
+        },
+        {
+          "expr": "arxael_merge_in_flight_gates",
+          "legendFormat": "in-flight gates",
+          "refId": "B"
+        },
+        {
+          "expr": "arxael_merge_queue_depth",
+          "legendFormat": "queue depth (backlog)",
+          "refId": "C"
+        },
+        {
+          "expr": "arxael_merge_processing",
+          "legendFormat": "processing",
+          "refId": "D"
+        }
       ]
     },
     {
       "id": 14,
       "title": "Bounces & reverts (rate/min)",
       "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 20 },
-      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "fillOpacity": 10 } } },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 20
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10
+          }
+        }
+      },
       "targets": [
-        { "expr": "rate(arxael_merge_reverts_total[1m]) * 60", "legendFormat": "reverts/min", "refId": "A" },
-        { "expr": "rate(arxael_merge_bounced_semantic_total[1m]) * 60", "legendFormat": "bounced semantic/min", "refId": "B" },
-        { "expr": "rate(arxael_merge_bounced_textual_total[1m]) * 60", "legendFormat": "bounced textual/min", "refId": "C" },
-        { "expr": "rate(arxael_merge_errors_total[1m]) * 60", "legendFormat": "errors/min", "refId": "D" }
+        {
+          "expr": "rate(arxael_merge_reverts_total[1m]) * 60",
+          "legendFormat": "reverts/min",
+          "refId": "A"
+        },
+        {
+          "expr": "rate(arxael_merge_bounced_semantic_total[1m]) * 60",
+          "legendFormat": "bounced semantic/min",
+          "refId": "B"
+        },
+        {
+          "expr": "rate(arxael_merge_bounced_textual_total[1m]) * 60",
+          "legendFormat": "bounced textual/min",
+          "refId": "C"
+        },
+        {
+          "expr": "rate(arxael_merge_errors_total[1m]) * 60",
+          "legendFormat": "errors/min",
+          "refId": "D"
+        }
       ]
     },
     {
       "id": 20,
-      "title": "Invoke outcomes (rate/min) — incl. OVERLOADED backpressure",
+      "title": "Invoke outcomes (rate/min) \u2014 incl. OVERLOADED backpressure",
       "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 28 },
-      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "fillOpacity": 10 } } },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 28
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10
+          }
+        }
+      },
       "targets": [
-        { "expr": "rate(arxael_executor_invoke_success_total[1m]) * 60", "legendFormat": "success/min", "refId": "A" },
-        { "expr": "rate(arxael_executor_invoke_failed_total[1m]) * 60", "legendFormat": "failed/min", "refId": "B" },
-        { "expr": "rate(arxael_executor_invoke_overloaded_total[1m]) * 60", "legendFormat": "OVERLOADED/min (backpressure)", "refId": "C" },
-        { "expr": "rate(arxael_executor_invoke_error_total[1m]) * 60", "legendFormat": "error/min", "refId": "D" },
-        { "expr": "rate(arxael_executor_invoke_rejected_total[1m]) * 60", "legendFormat": "rejected/min", "refId": "E" }
+        {
+          "expr": "rate(arxael_executor_invoke_success_total[1m]) * 60",
+          "legendFormat": "success/min",
+          "refId": "A"
+        },
+        {
+          "expr": "rate(arxael_executor_invoke_failed_total[1m]) * 60",
+          "legendFormat": "failed/min",
+          "refId": "B"
+        },
+        {
+          "expr": "rate(arxael_executor_invoke_overloaded_total[1m]) * 60",
+          "legendFormat": "OVERLOADED/min (backpressure)",
+          "refId": "C"
+        },
+        {
+          "expr": "rate(arxael_executor_invoke_error_total[1m]) * 60",
+          "legendFormat": "error/min",
+          "refId": "D"
+        },
+        {
+          "expr": "rate(arxael_executor_invoke_rejected_total[1m]) * 60",
+          "legendFormat": "rejected/min",
+          "refId": "E"
+        }
       ]
     },
     {
       "id": 21,
       "title": "Build time (EWMA) & hung-build cap hits",
       "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 28 },
-      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 } } },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 28
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10
+          }
+        }
+      },
       "targets": [
-        { "expr": "arxael_executor_build_ms_typical", "legendFormat": "build time EWMA (ms)", "refId": "A" },
-        { "expr": "arxael_executor_build_run_cap_hits_total", "legendFormat": "run-cap hits (hang canary — want 0)", "refId": "B" }
+        {
+          "expr": "arxael_executor_build_ms_typical",
+          "legendFormat": "build time EWMA (ms)",
+          "refId": "A"
+        },
+        {
+          "expr": "arxael_executor_build_run_cap_hits_total",
+          "legendFormat": "run-cap hits (hang canary \u2014 want 0)",
+          "refId": "B"
+        }
       ]
     },
     {
       "id": 22,
       "title": "Time-to-land p50 / p95 / p99",
       "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 36 },
-      "fieldConfig": { "defaults": { "unit": "ms", "custom": { "drawStyle": "line", "fillOpacity": 10 } } },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 36
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10
+          }
+        }
+      },
       "targets": [
-        { "expr": "arxael_merge_p50_time_to_land_ms", "legendFormat": "p50", "refId": "A" },
-        { "expr": "arxael_merge_p95_time_to_land_ms", "legendFormat": "p95", "refId": "B" },
-        { "expr": "arxael_merge_p99_time_to_land_ms", "legendFormat": "p99", "refId": "C" }
+        {
+          "expr": "arxael_merge_p50_time_to_land_ms",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "expr": "arxael_merge_p95_time_to_land_ms",
+          "legendFormat": "p95",
+          "refId": "B"
+        },
+        {
+          "expr": "arxael_merge_p99_time_to_land_ms",
+          "legendFormat": "p99",
+          "refId": "C"
+        }
       ]
     },
     {
       "id": 23,
       "title": "Governor live sensors (the inputs that drive every resize)",
       "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 36 },
-      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 } } },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 36
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10
+          }
+        }
+      },
       "targets": [
-        { "expr": "arxael_governor_cpu_load1", "legendFormat": "CPU load1", "refId": "A" },
-        { "expr": "arxael_governor_io_wait_pct", "legendFormat": "%iowait", "refId": "B" },
-        { "expr": "arxael_governor_mem_avail_mb / 1024", "legendFormat": "mem avail (GB)", "refId": "C" }
+        {
+          "expr": "arxael_governor_cpu_load1",
+          "legendFormat": "CPU load1",
+          "refId": "A"
+        },
+        {
+          "expr": "arxael_governor_io_wait_pct",
+          "legendFormat": "%iowait",
+          "refId": "B"
+        },
+        {
+          "expr": "arxael_governor_mem_avail_mb / 1024",
+          "legendFormat": "mem avail (GB)",
+          "refId": "C"
+        }
       ]
+    },
+    {
+      "id": 24,
+      "type": "stat",
+      "title": "Engine version",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 44
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "targets": [
+        {
+          "expr": "arxael_build_info",
+          "legendFormat": "{{version}}",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "name",
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "description": "Running engine version (from arxael_build_info)."
     }
   ]
 }

@@ -47,7 +47,12 @@ val generateVersionResource by tasks.registering {
         }
     }
 }
-sourceSets["main"].resources.srcDir(generateVersionResource)
+// Put the generated file on the runtime classpath via processResources (it copies the task's output dir into
+// the resources output) rather than declaring build/generated/version as a source ROOT. `resources.srcDir(task)`
+// registers a source root that IDEs flag as "missing" whenever build/ is absent — a fresh checkout, after a
+// clean, or in the window between a build-wipe and the next Gradle sync. `from(task)` has no such phantom root,
+// so the IDE never flags it, while BuildInfo still reads "/arxael-version" off the classpath.
+tasks.processResources { from(generateVersionResource) }
 
 tasks.test {
     useJUnitPlatform()

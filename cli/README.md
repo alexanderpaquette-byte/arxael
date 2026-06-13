@@ -43,6 +43,13 @@ release that ships an engine artifact** and caches it, so the project can publis
 without you reinstalling — `arxael upgrade` (or `npm install -g arxael@latest` for the launcher itself) pulls
 the newest engine. Pin a specific engine with `ARXAEL_ENGINE_VERSION=1.2.3` for reproducibility.
 
+**Knowing what you're running + staying current.** `arxael version` shows the CLI / engine / running-daemon
+versions and **warns if the warm daemon is older than the installed engine** (restart to adopt). An
+**interactive-only, once/day** check tells you when a newer release exists — it **never auto-updates** (so a
+pinned, vetted build stays put), is **off for agents / non-TTY / `CI`** (nothing ever beacons on the agent
+path), sends no code or telemetry (just a GET to the public releases API), and is opt-out with
+`ARXAEL_NO_UPDATE_CHECK=1` (or `DO_NOT_TRACK`). Updating is always a deliberate `arxael upgrade`.
+
 ## Notes
 
 - **Platforms:** Linux and macOS. (Windows: run under WSL for now.)

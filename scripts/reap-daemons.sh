@@ -15,9 +15,13 @@ SIG="${1:-}"
 self=$$
 killed=0
 
-# 1) JVMs: arxael daemon (dev.arxael.MainKt) + Gradle daemons (org.gradle...GradleDaemon) + Gradle wrapper.
+# 1) JVMs: arxael daemon (dev.arxael.MainKt) + Gradle daemons (org.gradle...GradleDaemon) + Gradle wrapper
+#    + Kotlin compile daemons (org.jetbrains.kotlin.daemon.KotlinCompileDaemon). The Kotlin daemons are spawned
+#    by Kotlin-project builds and idle out on Kotlin's OWN (longer) timeout — Gradle's reaper doesn't manage
+#    them, so a heavy fleet accumulates them. Match by jps main-class (not pkill -f), so
+#    this can never self-match the reaper. Like GradleDaemon, this is a between-runs cleanup, not run mid-build.
 if command -v jps >/dev/null 2>&1; then
-  pids=$(jps -l 2>/dev/null | awk '/dev\.arxael|GradleDaemon|org\.gradle\.launcher/{print $1}')
+  pids=$(jps -l 2>/dev/null | awk '/dev\.arxael|GradleDaemon|org\.gradle\.launcher|KotlinCompileDaemon/{print $1}')
   for p in $pids; do
     [ "$p" = "$self" ] && continue
     kill ${SIG} "$p" 2>/dev/null && killed=$((killed+1))
@@ -30,7 +34,7 @@ for p in $(ps -eo pid,args | awk '/merge_http_loa[d]\.py|merge_si[m]\.py/{print 
   kill ${SIG:--TERM} "$p" 2>/dev/null && killed=$((killed+1))
 done
 
-remaining=$(jps -l 2>/dev/null | grep -cE 'dev\.arxael|GradleDaemon' || true)
+remaining=$(jps -l 2>/dev/null | grep -cE 'dev\.arxael|GradleDaemon|KotlinCompileDaemon' || true)
 echo "reaped=${killed} remaining_jvm=${remaining}"
 # Always succeed: a failed kill on an already-gone PID must never abort a caller's command chain.
 exit 0

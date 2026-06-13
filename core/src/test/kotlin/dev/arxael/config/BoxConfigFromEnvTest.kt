@@ -45,7 +45,7 @@ class BoxConfigFromEnvTest {
         assertTrue(c.adaptive)
         assertEquals(1, c.concurrencyFloor)
         assertTrue(c.buildCache)
-        assertTrue(c.perWorktreeHome) // D8: per-worktree homes are the default (lock-free + self-filling RO cache)
+        assertTrue(c.perWorktreeHome) // per-worktree homes are the default (lock-free + self-filling RO cache)
         assertEquals(120L, c.daemonIdleSec)
     }
 

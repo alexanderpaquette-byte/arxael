@@ -16,7 +16,7 @@ set -u
 # ---------------------------------------------------------------- where things live (auto, no setup)
 HOME_DIR="${HOME:-/home/ubuntu}"
 STATE="${ARXAEL_STATE_DIR:-$HOME_DIR/.arxael}"
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"     # the arxael-dev-kit checkout
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"     # the arxael checkout
 PORT_FILE="$STATE/port"; PID_FILE="$STATE/pid"; LOG_FILE="$STATE/daemon.log"
 mkdir -p "$STATE"
 
@@ -256,14 +256,51 @@ connect_current_project() {
   fi
   # gateWorktrees:0 => let the daemon size the async-gate pool to the box (cores+RAM, H4 autoGateWorktrees);
   # set ARXAEL_GATE_WORKTREES to pin a specific count instead.
-  local res; res="$(post /merge/register "{\"repo\":\"$hub\",\"gateWorktrees\":${ARXAEL_GATE_WORKTREES:-0}}" 120 2>/dev/null)"
-  if echo "$res" | grep -q '"ok":true'; then
-    local mods; mods="$(echo "$res" | jqv '.modules' modules)"
-    say "$OK Connected ${B}$name${D}${mods:+ ($mods modules)}. Agents can now submit changes; merged work lands in:"
-    say "   $hub   (get it with: ${B}git pull \"$hub\" main${D})"
-  else
-    say "$WARN Couldn't connect ${B}$name${D} — usually no commits on ${B}main${D} yet, or the daemon is busy. See ${B}arxael logs${D}."
+  # /merge/register now ACKs immediately (202) and prepares the project in the BACKGROUND — the first
+  # build is cold (it probes the module graph + warms the dep cache), which used to block this call past the
+  # client timeout and look like a failure. So: a hard failure here (e.g. no commits on main) is still
+  # reported at once (422); otherwise we POLL /merge/status registerState and report REAL readiness.
+  local res; res="$(post /merge/register "{\"repo\":\"$hub\",\"gateWorktrees\":${ARXAEL_GATE_WORKTREES:-0}}" 30 2>/dev/null)"
+  if ! echo "$res" | grep -q '"ok":true'; then
+    local err; err="$(echo "$res" | jqv '.error' error)"
+    say "$WARN Couldn't connect ${B}$name${D}${err:+ — $err}. Usually no commits on ${B}main${D} yet. See ${B}arxael logs${D}."
+    return 0
   fi
+  local state="registering" waited=0 said_wait=0 fails=0 m
+  while [ "$state" = "registering" ] && [ "$waited" -lt 600 ]; do
+    m="$(api /merge/status 5 2>/dev/null)"
+    if [ -z "$m" ]; then
+      # the status call ITSELF failed (daemon crash / network) — distinct from "still registering"; don't
+      # silently spin the full timeout. Tolerate a transient blip, but bail after a few in a row.
+      fails=$((fails+1))
+      [ "$fails" -ge 3 ] && { say "$WARN Lost contact with the daemon while connecting ${B}$name${D} — try ${B}arxael up${D} again (see ${B}arxael logs${D})."; return 0; }
+      sleep 2; waited=$((waited+2)); continue
+    fi
+    fails=0
+    state="$(printf '%s' "$m" | sed -n 's/.*"registerState":"\([a-z]*\)".*/\1/p')"
+    # An OLDER daemon (pre-async-register) doesn't expose registerState — it registered SYNCHRONOUSLY, so if it
+    # reports registered:true the project is already ready. Fall back to that instead of polling the full timeout
+    # for a field it will never send (the version-skew case: new CLI, old daemon).
+    [ -z "$state" ] && { printf '%s' "$m" | grep -q '"registered":true' && state="ready" || state="registering"; }
+    if [ "$state" = "registering" ]; then
+      [ "$said_wait" = 0 ] && { say "$OK Connecting ${B}$name${D} — preparing (first build is cold: probing modules + warming caches)…"; said_wait=1; }
+      sleep 2; waited=$((waited+2))
+    fi
+  done
+  case "$state" in
+    ready)
+      local mods; mods="$(api /merge/status 5 2>/dev/null | jqv '.modules' modules)"
+      say "$OK Connected ${B}$name${D}${mods:+ ($mods modules)}. Agents can now submit changes; merged work lands in:"
+      say "   $hub   (get it with: ${B}git pull \"$hub\" main${D})"
+      ;;
+    failed)
+      local err; err="$(api /merge/status 5 2>/dev/null | jqv '.registerError' registerError)"
+      say "$WARN Couldn't connect ${B}$name${D}${err:+ — $err}. See ${B}arxael logs${D}."
+      ;;
+    *)
+      say "$WARN ${B}$name${D} is still preparing after ${waited}s — it should be ready shortly; check ${B}arxael status${D}."
+      ;;
+  esac
 }
 
 # ---------------------------------------------------------------- status: plain-language health

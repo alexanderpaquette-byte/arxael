@@ -1,4 +1,4 @@
-# Prometheus scrape config for arxael-dev-kit.
+# Prometheus scrape config for arxael.
 #
 # The daemon exposes Prometheus metrics natively at GET /metrics (no exporter, no extra deps).
 # Point your Prometheus at it:
@@ -17,4 +17,4 @@ scrape_configs:
     static_configs:
       - targets: ["127.0.0.1:8723"]
         labels:
-          service: arxael-dev-kit
+          service: arxael

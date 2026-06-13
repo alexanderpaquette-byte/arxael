@@ -14,7 +14,7 @@ import java.nio.file.Files
 import java.util.concurrent.CountDownLatch
 
 /**
- * arxael-dev-kit daemon.
+ * arxael daemon.
  *
  * One long-lived process holding N warm per-worktree build servers behind a single arg-allowlisted
  * /invoke surface. The whole agent fleet routes through this — instead of each agent cold-starting

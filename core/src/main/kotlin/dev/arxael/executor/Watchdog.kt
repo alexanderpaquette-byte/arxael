@@ -22,6 +22,10 @@ class Watchdog(
     @Volatile private var running = false
     private var thread: Thread? = null
 
+    // Throttle the orphaned-worktree-home sweep so it runs at most once a minute, independent of the
+    // (default 2s) tick interval — the GC's own TTL is 10 min, so a 1-min sweep cadence is ample.
+    @Volatile private var lastWorktreeGcMs = 0L
+
     fun start() {
         running = true
         thread = Thread {
@@ -51,6 +55,16 @@ class Watchdog(
             val recovered = executor.recoverUnhealthy()
             if (recovered > 0) events.emit("watchdog_recovered", mapOf("recovered" to recovered))
         }
+        // Reclaim orphaned per-worktree gradle homes off the request path. The executor's on-demand GC
+        // only runs when the warm pool is OVER its cap, so under-cap churn (fault/quarantine eviction,
+        // short-lived branch worktrees) would otherwise accumulate one gradle home per worktree forever.
+        // Throttled to once a minute regardless of the tick interval.
+        val now = System.currentTimeMillis()
+        if (now - lastWorktreeGcMs >= WORKTREE_GC_SWEEP_MS) {
+            lastWorktreeGcMs = now
+            val reclaimed = executor.gcOrphanedWorktrees()
+            if (reclaimed > 0) events.emit("watchdog_worktree_gc", mapOf("reclaimed" to reclaimed))
+        }
     }
 
     fun stop() {
@@ -59,6 +73,9 @@ class Watchdog(
     }
 
     companion object {
+        /** Sweep orphaned per-worktree gradle homes at most this often (the GC's own TTL is 10 min). */
+        const val WORKTREE_GC_SWEEP_MS = 60_000L
+
         /** Pure probe over the servers: (checked, unhealthy), skipping busy ones (never wait on a build). */
         fun scan(servers: Collection<WorktreeServer>): Pair<Int, Int> {
             var checked = 0; var unhealthy = 0

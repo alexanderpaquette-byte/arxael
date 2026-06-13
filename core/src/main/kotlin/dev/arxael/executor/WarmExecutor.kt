@@ -233,7 +233,7 @@ class WarmExecutor(
                     // recovery to actual faults instead of leaving a broken connection to ERROR on every call.
                     evictFaulted(key, server)
                     // A build cancelled at the run cap (Fix A) surfaces here as an infra fault. Tally it
-                    // distinctly: a rising buildRunCapHits means builds are HANGING — a key soak/dogfood signal.
+                    // distinctly: a rising buildRunCapHits means builds are HANGING — a key soak signal.
                     if (e.message?.contains("run cap and was cancelled") == true) buildRunCapHits.incrementAndGet()
                     val runMs = (System.nanoTime() - runStart) / 1_000_000
                     events.emit("invoke_error", mapOf("key" to key, "server" to server.id, "error" to e.message))
@@ -307,11 +307,19 @@ class WarmExecutor(
      * The TTL covers the create window — [serverFor]'s `adapter.open` bumps the dir's mtime before the server
      * lands in the map, so an in-flight creation is never deleted out from under itself; once mapped, the
      * live-key check covers it. A re-seen worktree simply re-warms (cheap via the shared RO dep cache).
+     *
+     * This used to run ONLY from [maybeEvict], which early-returns when the warm pool is
+     * at/under its cap — so under-cap churn (fault/quarantine eviction, or short-lived branch worktrees while
+     * the pool stays small) accumulated one gradle home per distinct worktree, unreclaimed, until/unless the
+     * pool later exceeded the cap. It is now ALSO swept periodically by the [Watchdog] (off the request path),
+     * so orphans are reclaimed independent of cap pressure. Returns the number of output-bases reclaimed.
+     * `internal` so the watchdog (same module) can drive the sweep; otherwise behavior-identical.
      */
-    private fun gcOrphanedWorktrees() {
-        if (!Files.isDirectory(worktreesRoot)) return
+    internal fun gcOrphanedWorktrees(): Int {
+        if (!Files.isDirectory(worktreesRoot)) return 0
         val liveDirs = servers.keys.mapTo(HashSet()) { hash(it) }
         val cutoff = System.currentTimeMillis() - WORKTREE_GC_TTL_MS
+        var reclaimed = 0
         runCatching {
             Files.list(worktreesRoot).use { stream ->
                 stream.forEach { dir ->
@@ -321,10 +329,12 @@ class WarmExecutor(
                     if (touchedRecently) return@forEach
                     if (runCatching { dir.toFile().deleteRecursively() }.getOrDefault(false)) {
                         events.emit("worktree_gc", mapOf("dir" to name))
+                        reclaimed++
                     }
                 }
             }
         }
+        return reclaimed
     }
 
     /**

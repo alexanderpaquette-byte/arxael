@@ -158,7 +158,7 @@ gets the whole machine unless it passes a flag. `arxael status` and `/health` sh
 For many concurrent agents the throughput-tuned config is:
 - **Per-build parallelism scaled to cores** (each build should use the box; a 1-worker build caps it at ~40% CPU).
 - **`ARXAEL_PER_WORKTREE_HOME=true` (now the DEFAULT)** removes the shared-`GRADLE_USER_HOME` cross-process
-  cache lock — the proven concurrency ceiling (Phase 0: ~8 builds, CPU ~12%). Per-worktree homes would
+  cache lock — the proven concurrency ceiling (~8 builds). Per-worktree homes would
   otherwise re-download dependencies and hit Maven Central **429s at scale**, so the daemon makes it safe
   automatically: at startup (per-worktree on, no `ARXAEL_RO_DEP_CACHE` pinned) it wires a daemon-global
   read-only shared dep cache (`<stateDir>/shared-deps/caches`) and runs a background **consolidator** that
@@ -181,12 +181,14 @@ design in `docs/ARCHITECTURE.md` / `docs/ARCHITECTURE.md`). The agent-runner cre
 # the project itself (correct-by-construction; supply it explicitly only to override). threshold = the
 # closure size that BOUNDS optimistic eligibility; under the default self-tuning balanced mode it only
 # bounds the optimistic set, and live load decides batch-vs-optimistic within that bound.
+# Returns 202 IMMEDIATELY (a bad repo with no 'main' is 422). The cold-Gradle probe + dep-cache warm run in
+# the background — poll /merge/status until "registerState":"ready" before submitting (the first build is cold).
 curl -sX POST 127.0.0.1:8723/merge/register -H 'Content-Type: application/json' \
   -d '{"repo":"/path/to/bare.git","threshold":4,"gateWorktrees":4}'
 # submit a branch-tested PR (module = its Gradle path; null => routed batched/full)
 curl -sX POST 127.0.0.1:8723/merge/submit -H 'Content-Type: application/json' \
   -d '{"branch":"feature-x","module":":app","agentId":"agent7"}'
-curl -s 127.0.0.1:8723/merge/status     # landed / reverts / time-to-land / routing split
+curl -s 127.0.0.1:8723/merge/status     # registerState + landed / reverts / time-to-land / routing split
 ```
 Routing is load-adaptive and self-tuning under the default `balanced` mode: a PR lands optimistically
 (instant, verifies async on a module-scoped gate that auto-reverts a break) when pending work fills the

@@ -104,7 +104,7 @@ A condensed contract you can drop straight into Claude Code / Cursor / Aider / a
 > 127.0.0.1:$PORT/` returns the live, self-describing API if anything here is unclear.
 
 ## Is something wrong?
-`GET /health` shows live capacity + `recentErrorCount` + the last few faults. `GET /metrics` is a Prometheus
+`GET /health` shows the engine `version` + live capacity + `recentErrorCount` + the last few faults. `GET /metrics` is a Prometheus
 scrape target (dashboard in `ops/`). `scripts/arxael logs` prints recent activity in plain English. The full
 audit trail is `~/.arxael/events.jsonl`.
 

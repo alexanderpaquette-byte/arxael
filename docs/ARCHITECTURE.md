@@ -75,7 +75,10 @@ whole point); build duration feeds `DurationTracker`.
 `register` (usually done by `arxael up`): attach an integration worktree + a pool of gate worktrees to the
 bare repo; **auto-discover** the module graph (`ModuleGraphProbe`) unless given; if per-worktree homes are
 on, **warm** the shared RO dep cache (`DepCacheWarmer`); start the `MergeOrchestrator` and `recover()` any
-journaled-but-unfinished PRs. Then agents `submit` branch-tested PRs. The orchestrator's loop drains the
+journaled-but-unfinished PRs. The cheap fatal check (repo has `main`) is synchronous, but the cold-Gradle
+parts (the module-graph probe + dep-cache warm) run **in the background**: `register` returns `202` at once
+and exposes `registerState` (`registering` → `ready` | `failed`) on `/merge/status`, so a cold first register
+can never block a client past its timeout. Then agents `submit` branch-tested PRs. The orchestrator's loop drains the
 queue and, per PR, `MergeRouter` chooses **load-adaptively** (the default `balanced` mode), bounded by the
 PR's dependency-closure:
 - **OPTIMISTIC** when the gate pool has room to fill — pending work (`queueDepth + inFlightGates`) is filling
@@ -113,9 +116,9 @@ can't leave an unverified change on `main`.
 | `/health` | GET | liveness, resolved config (cores/RAM/budget/binding), live target/workers, recent errors |
 | `/invoke` | POST | run a build/test in a worktree on the warm executor |
 | `/warmup` | POST | pre-spawn a worktree's build daemon off the critical path |
-| `/merge/register` | POST | register the project (operator; usually via `arxael up`) |
+| `/merge/register` | POST | register the project (operator; usually via `arxael up`). Returns `202` immediately; the cold-Gradle probe runs async — poll `/merge/status` for `registerState=ready` |
 | `/merge/submit` | POST | submit a branch-tested PR to land on `main` |
-| `/merge/status` | GET | merge-queue stats (landed/reverts/bounces/errors/in-flight) |
+| `/merge/status` | GET | merge-queue stats (landed/reverts/bounces/errors/in-flight) + `registerState` (idle/registering/ready/failed) |
 | `/shutdown` | POST | graceful stop (closes everything, reaps daemons) |
 
 Wire shapes are in `protocol/Protocol.kt` and live on `GET /`.

@@ -551,7 +551,7 @@ class MergeOrchestratorTest {
         // Warmup: below CONFLICT_MIN_SAMPLES -> batch regardless of rate.
         assertEquals(0, MergeOrchestrator.conflictThresholdWindowed(recentRate = 0.9, totalSamples = 5, optimisticThr = 16))
         // Warmed: recent rate is the discriminator (not lifetime). High recent rate -> optimistic even if a long
-        // low-conflict history would have diluted a cumulative average below threshold (the iter17 lag, fixed).
+        // low-conflict history would have diluted a cumulative average below threshold.
         assertEquals(16, MergeOrchestrator.conflictThresholdWindowed(recentRate = 0.53, totalSamples = 800, optimisticThr = 16),
             "recent 53% conflict -> flip to optimistic")
         assertEquals(0, MergeOrchestrator.conflictThresholdWindowed(recentRate = 0.20, totalSamples = 800, optimisticThr = 16),
@@ -563,15 +563,15 @@ class MergeOrchestratorTest {
     @Test
     fun conflictThresholdWindowed_customCrossoverThreshold() {
         // The crossover is tunable (runtime ARXAEL_HIGH_CONFLICT_RATE / future gate-cost-adaptive). A recent rate of
-        // 0.30 stays batch at the default 0.35 crossover but flips at a lowered 0.25 crossover — the lever iter19
-        // showed we need (a100 conflict parked near 0.35, so the default never committed).
+        // 0.30 stays batch at the default 0.35 crossover but flips at a lowered 0.25 crossover — the lever we need
+        // when conflict parks near 0.35, so the default never commits.
         assertEquals(0, MergeOrchestrator.conflictThresholdWindowed(0.30, 800, 16, highConflictRate = 0.35))
         assertEquals(16, MergeOrchestrator.conflictThresholdWindowed(0.30, 800, 16, highConflictRate = 0.25))
     }
 
     @Test
     fun conflictThresholdWindowed_decisiveWhereCumulativeLagged() {
-        // The iter17 failure, distilled: a run whose conflict BUILT to ~53% but whose LIFETIME ratio was only ~31%
+        // The cumulative-lag failure, distilled: a run whose conflict BUILT high but whose LIFETIME ratio stayed low
         // (dragged by the low-conflict early phase). Cumulative stays batch (wrong); windowed flips (right).
         assertEquals(0, MergeOrchestrator.conflictThreshold(landed = 690, bounced = 310, optimisticThr = 16),
             "cumulative 31% -> batch (the lagging miss)")

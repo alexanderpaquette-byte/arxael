@@ -70,7 +70,7 @@ cmd_build() {
   ARXAEL_GRADLE_HOME="${ARXAEL_GRADLE_HOME:-/opt/gradle/gradle-8.10.2}" "$KIT/gradlew" :core:installDist --rerun-tasks -q
   rc=$?
   if [ $rc -ne 0 ]; then echo "BUILD FAILED rc=$rc"; exit $rc; fi
-  # H13 lesson: verify the daemon ENTRYPOINT made it into the dist, not just that compile passed.
+  # Verify the daemon ENTRYPOINT made it into the dist, not just that compile passed.
   if grep -q 'dev.arxael.MainKt' "$KIT/core/build/install/core/bin/core" 2>/dev/null; then
     echo "BUILD OK — dev.arxael.MainKt entrypoint present."
   else

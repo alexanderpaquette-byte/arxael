@@ -1,14 +1,14 @@
 # Arxael — System Overview (meta map)
 
-> Simplified, generated map of how the pieces fit together. The authoritative reference is
-> [ARCHITECTURE.md](ARCHITECTURE.md); this doc only covers the shape.
+> Simplified map of how the pieces fit together. This is just the shape.
 >
 > 🌐 中文版本: [OVERVIEW.zh-CN.md](OVERVIEW.zh-CN.md)
 
 **One line:** many trusted local AI agents work on **one project** through **one warm, bounded, shared
-executor** on a box you own — they branch → test → open a PR → **merge to main**, fast and without
-conflicts, on a box that **sizes itself**. The win is **density** (agents-per-box before collapse),
-not single-build speed.
+executor** on a box you own — they branch → test → open a PR, and Arxael **lands what passes onto a `main`
+that stays green and auto-reverts what fails**, on a box that **sizes itself** and **queues heavy parallel
+load instead of wedging**. The technical win is **density** (agents-per-box before collapse), not
+single-build speed.
 
 > **Color key** used in every diagram below:
 > 🔵 agents/callers · 🟡 gatekeeper/control · 🟣 build service / core · 🟢 success · 🔴 failure · ⬜ config/aux · 🟦 artifacts
@@ -126,7 +126,7 @@ flowchart LR
 
 The warm executor is the foundation. Two layers ride on it to make the product the full thing —
 *many agents, one project, branch → test → PR → **merge to main**, fast and without conflicts, on a box
-that sizes itself*. Deep dives: [ARCHITECTURE.md](ARCHITECTURE.md), [SETUP.md](SETUP.md).
+that sizes itself*. Deep dive: [ARCHITECTURE.md](ARCHITECTURE.md), [SETUP.md](SETUP.md).
 
 - 🟣 **Merge orchestrator** (`dev.arxael.merge`, surface `/merge/{register,submit,status}`). Agents submit
   branch-tested PRs; the orchestrator lands them on a shared `main` without conflicts. It **self-tunes routing
@@ -201,7 +201,7 @@ flowchart LR
     end
 
     subgraph docs["docs/"]
-        d1["OVERVIEW · ARCHITECTURE"]:::cfg
+        d1["OVERVIEW · ARCHITECTURE · FIRST-LAND"]:::cfg
         d2["SETUP · LIMITATIONS"]:::cfg
     end
 
@@ -284,7 +284,7 @@ flowchart TB
 ## 4. The merge workflow (auto-route)
 
 > Two strategies, selected adaptively by live load (gate-fill + hysteresis) and bounded by dependency-closure size. Optimistic-land gives
-> the **latency**; the branch-gate + module-scoped verify give the **soundness** (main never breaks).
+> the **latency**; the branch-gate + module-scoped verify give the **soundness** (`main` is never *knowingly* broken).
 
 ```mermaid
 flowchart TB
@@ -294,11 +294,11 @@ flowchart TB
     router -->|"low load / large closure → Batched"| batch["Batched: gate-then-land<br/>(1 test per batch)"]:::core
 
     opt --> ascan{"module-scoped<br/>async gate"}:::gate
-    ascan -->|green| done1["stays landed ✓<br/>~0.1s time-to-land"]:::good
+    ascan -->|green| done1["stays landed ✓<br/>lands immediately"]:::good
     ascan -->|red| revert["auto-revert just this PR<br/>(no cascade)"]:::bad
 
     batch --> bgate{"gate the batch"}:::gate
-    bgate -->|green| done2["whole batch lands ✓<br/>main never breaks"]:::good
+    bgate -->|green| done2["whole batch lands ✓<br/>never lands a red merge"]:::good
     bgate -->|red| culprit["CulpritAttribution names<br/>the bad PR, re-gates the rest"]:::bad
 
     classDef agent fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
@@ -319,7 +319,7 @@ flowchart TB
   (hysteresis prevents flapping; a dominating batch forces the sound path); closure size bounds optimistic
   eligibility. Optimistic-land + module-scoped async revert vs batched gate-then-land + culprit attribution;
   gates run on a reserved **high** lane so landings never starve behind branch-tests.
-- **Branch-gate = soundness, optimistic-land = latency** — together: instant landings, main never broken.
+- **Branch-gate = soundness, optimistic-land = latency** — together: instant landings, `main` never *knowingly* broken (the one residual — undeclared cross-module coupling — is documented in [LIMITATIONS.md](LIMITATIONS.md)).
 - **PrJournal survives restart** — re-enqueues submitted-but-unfinished and landed-but-unverified PRs.
 - **Change-aware gate** — a doc-only PR skips the gate (can't break a test); a code PR is tested against
   only the modules its diff touches, not the whole project.

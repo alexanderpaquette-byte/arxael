@@ -9,6 +9,7 @@ import java.nio.file.Path
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -97,5 +98,41 @@ class MergeServiceTest {
         assertEquals(0, s["reverts"])
         assertEquals("mod1 v2", mainContent(":mod1"))
         assertEquals("mod2 v2", mainContent(":mod2"))
+    }
+
+    // the async register acks immediately, drives registerState registering -> ready, and the project
+    // is fully usable once ready — without the caller ever blocking on the (here-skipped) cold Gradle probe.
+    @Test
+    fun `registerAsync acks immediately, reaches ready, then submit lands`() {
+        seedRepo()
+        val ex = WarmExecutor(cfg(), AdapterRegistry.default(), events).also { executor = it }
+        val service = MergeService(cfg(), ex, events, gateAdapter = "noop").also { svc = it }
+
+        service.registerAsync(bare.toString(), modules.associateWith { emptySet() }, thresholdSpec = 4, gateCount = 2)
+        val readyBy = System.nanoTime() + 30_000L * 1_000_000
+        while (System.nanoTime() < readyBy && service.registerStatus().first != "ready") Thread.sleep(10)
+        assertEquals("ready", service.registerStatus().first)
+        assertTrue(service.isRegistered())
+
+        createPr("p1", ":mod1", "mod1 v2")
+        assertTrue(service.submit("p1", ":mod1", "agentA"))
+        val landBy = System.nanoTime() + 30_000L * 1_000_000
+        while (System.nanoTime() < landBy && (service.status()?.get("landed") as? Int ?: 0) < 1) Thread.sleep(20)
+        assertEquals("mod1 v2", mainContent(":mod1"))
+    }
+
+    // the cheap, fatal precondition (repo has `main`) is validated on the CALLER's thread, so a bad repo
+    // still fails fast (mapped to 422) instead of acking and silently failing async.
+    @Test
+    fun `registerAsync fails fast on a repo with no main branch`() {
+        val emptyBare = tmp.resolve("empty.git")
+        GitOps.git(tmp, "init", "--bare", "-q", emptyBare.toString())
+        val ex = WarmExecutor(cfg(), AdapterRegistry.default(), events).also { executor = it }
+        val service = MergeService(cfg(), ex, events, gateAdapter = "noop").also { svc = it }
+        assertFailsWith<IllegalArgumentException> {
+            service.registerAsync(emptyBare.toString(), emptyMap(), thresholdSpec = 4, gateCount = 1)
+        }
+        assertFalse(service.isRegistered())
+        assertEquals("idle", service.registerStatus().first)
     }
 }

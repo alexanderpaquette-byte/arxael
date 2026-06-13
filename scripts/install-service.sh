@@ -38,7 +38,7 @@ fi
 echo "installing arxael.service (user=$UNIT_USER, port=$PORT, gradle=$GRADLE_HOME)…"
 $SUDO tee /etc/systemd/system/arxael.service >/dev/null <<UNIT
 [Unit]
-Description=arxael-dev-kit — warm bounded build/test executor + merge orchestrator
+Description=arxael — warm bounded build/test executor + merge orchestrator
 After=network.target
 # Crash-loop limiter. MUST be in [Unit] — systemd ignores StartLimit* in [Service] (verified via
 # systemd-analyze verify), which would leave a deterministic startup failure (e.g. port already in use)

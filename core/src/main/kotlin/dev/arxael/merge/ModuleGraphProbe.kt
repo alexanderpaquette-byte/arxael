@@ -69,7 +69,15 @@ object ModuleGraphProbe {
                 .forProjectDirectory(projectDir.toFile())
                 .connect().use { c ->
                     c.newBuild()
-                        .withArguments("--init-script", init.toString(), "-q")
+                        // --no-configuration-cache: this probe exists ONLY for the init-script's println
+                        // side effects (ARXMODDIR/ARXDEP lines). A registered project with
+                        // org.gradle.configuration-cache=true stores its config cache in the PROJECT dir
+                        // (.gradle/configuration-cache); on the 2nd+ probe against the same projectDir Gradle
+                        // REUSES that cache and SKIPS projectsEvaluated, so NO tagged lines are printed and the
+                        // graph parses to ZERO modules (everything then routes BATCHED — silent loss of
+                        // incremental routing). Disable it here so the callback always runs. Real gate builds
+                        // keep config cache (this flag is probe-only).
+                        .withArguments("--init-script", init.toString(), "-q", "--no-configuration-cache")
                         .forTasks("help")
                         .setStandardOutput(out)
                         .setStandardError(out)

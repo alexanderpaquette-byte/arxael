@@ -49,7 +49,14 @@ object DepCacheWarmer {
                 .forProjectDirectory(projectDir.toFile())
                 .connect().use { c ->
                     c.newBuild()
-                        .withArguments("--init-script", init.toString(), "-q")
+                        // --no-configuration-cache: this warm exists ONLY for the init-script's
+                        // resolve() side effects. A registered project with org.gradle.configuration-cache=true
+                        // stores its config cache in the PROJECT dir (.gradle/configuration-cache); on the 2nd+
+                        // warm against the same projectDir Gradle REUSES that cache and SKIPS projectsEvaluated,
+                        // so no configuration resolves and the seed cache is never populated (the documented
+                        // merge_dep_cache_warm_failed: warm no-ops, modules-2 never appears). Disable it here so
+                        // the callback always runs. Real gate builds keep config cache (this flag is warm-only).
+                        .withArguments("--init-script", init.toString(), "-q", "--no-configuration-cache")
                         .forTasks("help")
                         .setStandardOutput(out)
                         .setStandardError(out)

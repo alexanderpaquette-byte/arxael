@@ -49,4 +49,21 @@ class GitOpsTest {
         GitOps.git(tmp, "-c", "init.defaultBranch=main", "init", "-q")
         assertEquals("", GitOps.rev(tmp, "definitely-not-a-ref"))
     }
+
+    @Test
+    fun `setBranch returns false when the ref update is refused (checked-out branch), never throws`() {
+        // `git branch -f <currentBranch>` is REFUSED when the branch is checked out (exit != 0) — the exact
+        // production trigger behind the 2026-06-16 phantom-land (main checked out in a stray worktree). The
+        // land/revert primitive MUST report that as false (not throw, not a phantom success), so the orchestrator
+        // guards that discard-the-Boolean bug can detect a publish that did not happen.
+        GitOps.git(tmp, "-c", "init.defaultBranch=main", "init", "-q")
+        Files.writeString(tmp.resolve("f.txt"), "a")
+        g("add", "-A"); g("commit", "-q", "-m", "c1")
+        val c1 = GitOps.rev(tmp, "HEAD")
+        Files.writeString(tmp.resolve("f.txt"), "b")
+        g("add", "-A"); g("commit", "-q", "-m", "c2")
+        val c2 = GitOps.rev(tmp, "HEAD")
+        assertFalse(GitOps.setBranch(tmp, "main", c1), "a refused force-update maps to false, not an exception")
+        assertEquals(c2, GitOps.rev(tmp, "main"), "main must be unchanged after a refused update")
+    }
 }

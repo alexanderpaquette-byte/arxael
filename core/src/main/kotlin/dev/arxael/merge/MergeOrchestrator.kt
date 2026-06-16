@@ -490,7 +490,16 @@ class MergeOrchestrator(
             val before = GitOps.rev(bare, "main")
             if (!mergeOnto("main", pr)) return            // textual conflict (counted in mergeOnto)
             val head = GitOps.rev(integ, "HEAD")
-            GitOps.setBranch(bare, "main", head)          // LAND immediately, atomically with the merge
+            if (!GitOps.setBranch(bare, "main", head)) {  // ref publish REFUSED (e.g. main checked out in another
+                                                          // worktree -> `git branch -f` exits 128). Do NOT phantom-land:
+                                                          // never counted, never reported landed; re-queue (transient).
+                events.emit("merge_land_failed", mapOf(
+                    "branch" to pr.branch, "module" to pr.module, "commit" to head,
+                    "warn" to "ref update for main was refused — NOT a land; re-queuing",
+                ))
+                requeueForRetry(pr, "land-publish-failed")
+                return
+            }
             head to (head != before)                      // advanced=false => no-op re-merge (PR already on main)
         }
         // Count a land ONLY when it actually MOVED main. The H13 wedge-guard requeue (opt-main-already-red) re-routes
@@ -716,7 +725,7 @@ class MergeOrchestrator(
     private fun revertFromMain(wt: Path, commit: String): Boolean = synchronized(gitLock) {
         GitOps.git(wt, "checkout", "-q", "-B", "__rev", "main")
         val r = GitOps.git(wt, "revert", "--no-edit", "-m", "1", commit)
-        if (r.ok) { GitOps.setBranch(bare, "main", GitOps.rev(wt, "HEAD")); true }
+        if (r.ok) GitOps.setBranch(bare, "main", GitOps.rev(wt, "HEAD")) // false if the ref publish was refused -> revertOrSurface surfaces it
         else { GitOps.git(wt, "revert", "--abort"); false }
     }
 
@@ -876,8 +885,14 @@ class MergeOrchestrator(
             events.emit("merge_batch_stale", mapOf("count" to merged.size, "why" to "main-moved-during-gate"))
             merged.forEach { requeueForRetry(it, "main-moved") }
             false
+        } else if (!GitOps.setBranch(bare, "main", head)) {
+            events.emit("merge_land_failed", mapOf(
+                "count" to merged.size, "head" to head,
+                "warn" to "ref update for main was refused — batch NOT landed; re-queuing",
+            ))
+            merged.forEach { requeueForRetry(it, "land-publish-failed") }
+            false
         } else {
-            GitOps.setBranch(bare, "main", head)
             true
         }
     }

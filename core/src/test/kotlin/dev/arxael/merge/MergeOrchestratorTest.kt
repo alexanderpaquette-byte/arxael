@@ -104,6 +104,23 @@ class MergeOrchestratorTest {
     }
 
     @Test
+    fun `a refused main ref-update does NOT phantom-land - it is surfaced and re-queued`() {
+        val o = setup()
+        // Pin `main` as a CHECKED-OUT (non-detached) linked worktree, so `git branch -f main` is refused (exit
+        // 128) — the exact 2026-06-16 production trigger (main checked out in a stray worktree). The optimistic
+        // land must then fail loudly and re-queue, NOT report "landed" while refs/heads/main never moved.
+        val pin = tmp.resolve("pin-main")
+        GitOps.git(bare, "worktree", "add", "-q", pin.toString(), "main")
+        val before = GitOps.rev(bare, "main")
+        o.processBatch(listOf(createPr("a1", ":mod1", "ok change")))
+        assertEquals(before, GitOps.rev(bare, "main"), "main MUST NOT move when the ref publish is refused")
+        val s = o.snapshot()
+        assertEquals(0, s["landed"], "a refused publish must not count as a land")
+        assertEquals(0, s["optLanded"], "nor as an optimistic land (no phantom)")
+        assertTrue(o.prStatus("a1")?.state != "landed", "the PR must never be reported landed when main did not move")
+    }
+
+    @Test
     fun `unattributable red batch bisects - lands the good PRs, bounces the bad, bounded gate calls`() {
         val gateCalls = java.util.concurrent.atomic.AtomicInteger(0)
         val bisectGate = MergeGate { wt, _, _ ->

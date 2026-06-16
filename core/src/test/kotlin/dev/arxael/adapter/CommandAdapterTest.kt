@@ -76,13 +76,69 @@ class CommandAdapterTest {
     }
 
     @Test
-    fun `toolchainEnv is a no-op - CommandAdapters use the ambient toolchain home`() {
-        // gradlew on the ambient ~/.gradle shares the wrapper distribution (a per-worktree home would
-        // re-download it); maven/pytest lock little. So no per-call toolchain env is injected today.
+    fun `toolchainEnv is a no-op for non-gradlew toolchains and when per-worktree home is off`() {
+        // maven/pytest/cargo/go/npm lock little -> no per-call toolchain env regardless of perWorktreeHome.
         val ob = tmp.resolve("ob")
-        for (a in listOf("gradlew", "maven", "pytest", "cargo")) {
-            assertTrue(CommandAdapter.toolchainEnv(a, ob, cfg().copy(perWorktreeHome = true)).isEmpty())
+        for (a in listOf("maven", "pytest", "cargo", "go", "npm")) {
+            assertTrue(CommandAdapter.toolchainEnv(a, ob, cfg().copy(perWorktreeHome = true)).isEmpty(),
+                "non-gradlew '$a' must inject no toolchain env")
         }
+        // gradlew with the shared-home default (perWorktreeHome=false) keeps the ambient ~/.gradle-home.
+        assertTrue(CommandAdapter.toolchainEnv("gradlew", ob, cfg().copy(perWorktreeHome = false)).isEmpty(),
+            "gradlew on the shared home must inject no toolchain env")
+    }
+
+    @Test
+    fun `gradlew under per-worktree home gets an isolated GRADLE_USER_HOME with a shared wrapper-dists symlink`() {
+        val ob = tmp.resolve("ob-gradlew")
+        val cfg = cfg().copy(perWorktreeHome = true) // stateDir = tmp
+        val env = CommandAdapter.toolchainEnv("gradlew", ob, cfg)
+
+        // 1. Isolated, per-worktree GRADLE_USER_HOME under THIS worktree's output base (not the shared home).
+        val home = env["GRADLE_USER_HOME"]
+        assertEquals(ob.resolve("gradle-user-home").toString(), home,
+            "gradlew must get a per-worktree GRADLE_USER_HOME under its output base")
+        assertTrue(Files.isDirectory(Path.of(home!!)), "the per-worktree home must be created")
+
+        // 2. Daemon idletimeout is bounded (no 3h leak) — the same bound the warm gradle adapter sets.
+        val props = Files.readString(Path.of(home).resolve("gradle.properties"))
+        assertTrue(props.contains("org.gradle.daemon.idletimeout=${cfg.daemonIdleSec * 1000}"), "props=$props")
+
+        // 3. wrapper/dists is a SYMLINK to the one shared dir -> the Gradle dist is downloaded once, not per
+        //    worktree. This is the whole reason the per-worktree home is cheap.
+        val dists = Path.of(home).resolve("wrapper").resolve("dists")
+        assertTrue(Files.isSymbolicLink(dists), "wrapper/dists must be a symlink to the shared dist dir")
+        assertEquals(tmp.resolve("gradlew-wrapper-dists").toRealPath(), dists.toRealPath(),
+            "the symlink must target the daemon-shared wrapper-dists dir")
+
+        // 4. A SECOND worktree links to the SAME shared dists dir (so the dist is genuinely shared, not re-DLed).
+        val ob2 = tmp.resolve("ob-gradlew-2")
+        val dists2 = Path.of(CommandAdapter.toolchainEnv("gradlew", ob2, cfg)["GRADLE_USER_HOME"]!!)
+            .resolve("wrapper").resolve("dists")
+        assertEquals(dists.toRealPath(), dists2.toRealPath(), "both worktrees must share one wrapper-dists dir")
+    }
+
+    @Test
+    fun `gradlew toolchainEnv exposes a live RO dep cache when one is set, and omits it otherwise`() {
+        val ob = tmp.resolve("ob-rodep")
+        val cfg = cfg().copy(perWorktreeHome = true)
+        // No RO dep cache live -> the key is simply absent (build runs without one; correct, just slower).
+        assertFalse(CommandAdapter.toolchainEnv("gradlew", ob, cfg).containsKey("GRADLE_RO_DEP_CACHE"))
+        // Once the daemon establishes/pins a shared RO dep cache, gradlew reads deps through it (no re-download).
+        cfg.liveRoDepCache.set("/some/shared/caches")
+        assertEquals("/some/shared/caches",
+            CommandAdapter.toolchainEnv("gradlew", tmp.resolve("ob-rodep2"), cfg)["GRADLE_RO_DEP_CACHE"])
+    }
+
+    @Test
+    fun `gradlew toolchainEnv is idempotent across re-opens of the same worktree home`() {
+        // Warm reuse: re-opening the same worktree must not fail on the already-present symlink/home.
+        val ob = tmp.resolve("ob-idem")
+        val cfg = cfg().copy(perWorktreeHome = true)
+        val first = CommandAdapter.toolchainEnv("gradlew", ob, cfg)
+        val second = CommandAdapter.toolchainEnv("gradlew", ob, cfg)
+        assertEquals(first["GRADLE_USER_HOME"], second["GRADLE_USER_HOME"])
+        assertTrue(Files.isSymbolicLink(Path.of(first["GRADLE_USER_HOME"]!!).resolve("wrapper").resolve("dists")))
     }
 
     @Test

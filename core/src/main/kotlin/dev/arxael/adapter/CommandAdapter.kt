@@ -3,6 +3,7 @@ package dev.arxael.adapter
 import dev.arxael.config.BoxConfig
 import dev.arxael.protocol.InvokeSpec
 import kotlinx.serialization.json.Json
+import java.nio.file.Files
 import java.nio.file.Path
 
 /**
@@ -77,20 +78,62 @@ class CommandAdapter(
                 ?: s.split(Regex("\\s+"))
 
         /**
-         * Per-worktree toolchain-home env for a CommandAdapter. Currently a NO-OP (returns empty) — kept as
-         * the one place to add per-toolchain isolation if a real workload shows the ambient home binds.
+         * Per-worktree toolchain-home env for a CommandAdapter. For `gradlew` under [BoxConfig.perWorktreeHome]
+         * this returns a per-worktree `GRADLE_USER_HOME` (and a `GRADLE_RO_DEP_CACHE` when one is live), so the
+         * merge-gate's `./gradlew` no longer contends on the shared `~/.gradle-home` cross-process cache locks
+         * (`journal-1`/`fileHashes`/`javaCompile`) — the same lock ceiling the warm `gradle` adapter already
+         * dodges via its per-worktree home (GradleAdapter.open). Every other toolchain returns empty (maven/
+         * pytest/cargo/go/npm lock little; no measured benefit).
          *
-         * Why NOT a per-worktree `GRADLE_USER_HOME` for `gradlew` (an earlier attempt, reverted): the Gradle
-         * **distribution** the wrapper downloads lives in `GRADLE_USER_HOME/wrapper/dists`, and
-         * `GRADLE_RO_DEP_CACHE` shares only `modules-2` deps — NOT the distribution. So a per-worktree home
-         * makes every worktree re-download the wrapper's Gradle (hundreds of MB, minutes each) — far worse
-         * than the `~/.gradle` lock it would avoid. And the merge gate runs `gradlew` **sequentially**
-         * (non-gradle PRs route batched), so there's no concurrent-lock problem to solve there anyway.
-         * A correct future version would per-worktree the caches but SHARE `wrapper/dists` (symlink). The
-         * ProcExec env hook stays (general + harmless) for when that's worth building.
+         * The reason this was a no-op before: a naive per-worktree `GRADLE_USER_HOME` makes the project's OWN
+         * wrapper re-download the pinned Gradle **distribution** into `GRADLE_USER_HOME/wrapper/dists` (hundreds
+         * of MB, minutes) for every worktree — `GRADLE_RO_DEP_CACHE` shares only `modules-2` deps, NOT the
+         * distribution. The fix (the deferred plan) is to point each per-worktree home's `wrapper/dists` at ONE
+         * shared directory via a symlink: the wrapper resolves the dist under `GRADLE_USER_HOME/wrapper/dists`
+         * (Gradle wrapper docs), so the first worktree downloads it into the shared dir and every other reads it
+         * back through the link — per-worktree writable caches (no lock) WITHOUT the dist re-download. Deps are
+         * shared read-only through `GRADLE_RO_DEP_CACHE`, exactly as the warm gradle adapter does.
+         *
+         * Falls back to the ambient shared home (empty env) if the per-worktree home can't be prepared, so a
+         * filesystem hiccup degrades to the old behaviour rather than failing the build.
          */
-        @Suppress("UNUSED_PARAMETER") // params are the extension point for a future per-toolchain isolation
-        internal fun toolchainEnv(name: String, outputBase: Path, config: BoxConfig): Map<String, String> =
-            emptyMap()
+        internal fun toolchainEnv(name: String, outputBase: Path, config: BoxConfig): Map<String, String> {
+            if (name != "gradlew" || !config.perWorktreeHome) return emptyMap()
+            return runCatching {
+                val userHome = outputBase.resolve("gradle-user-home")
+                Files.createDirectories(userHome)
+                // Bound the wrapper-spawned daemon's life the same way the warm gradle adapter does (Gradle's
+                // 3h default would leak a GB-scale daemon per per-worktree home across a long uptime).
+                Files.writeString(userHome.resolve("gradle.properties"),
+                    "org.gradle.daemon.idletimeout=${config.daemonIdleSec * 1000}\n")
+                linkSharedWrapperDists(userHome, config)
+                val env = HashMap<String, String>()
+                env["GRADLE_USER_HOME"] = userHome.toString()
+                // Shared READ-ONLY dep cache (if the daemon established one): the per-worktree home reads deps
+                // from it and writes only NEW deps into its own home -> no re-download, no shared write lock.
+                config.liveRoDepCache.get()?.let { env["GRADLE_RO_DEP_CACHE"] = it }
+                env
+            }.getOrDefault(emptyMap())
+        }
+
+        /**
+         * Point this per-worktree home's `wrapper/dists` at ONE shared directory so the wrapper's Gradle
+         * distribution is downloaded once (by whichever worktree hits it first) and reused by every other
+         * worktree — the symlink that makes a per-worktree `GRADLE_USER_HOME` cheap. The shared dir is plain
+         * (writable) so the first download lands there; subsequent worktrees read it back through the link. The
+         * wrapper's per-distribution `.lck` is brief (unzip-only, one Gradle version) — NOT the cross-process
+         * build-cache locks the per-worktree home exists to eliminate. Best-effort: a pre-existing non-symlink
+         * `wrapper/dists` (e.g. a partially-warmed home) is left as-is rather than clobbered.
+         */
+        private fun linkSharedWrapperDists(userHome: Path, config: BoxConfig) {
+            val shared = config.stateDir.resolve("gradlew-wrapper-dists")
+            Files.createDirectories(shared)
+            val wrapperDir = userHome.resolve("wrapper")
+            Files.createDirectories(wrapperDir)
+            val dists = wrapperDir.resolve("dists")
+            if (Files.isSymbolicLink(dists)) return            // already linked (warm reuse) — nothing to do
+            if (Files.exists(dists)) return                     // a real dir is already there — don't clobber it
+            Files.createSymbolicLink(dists, shared)
+        }
     }
 }

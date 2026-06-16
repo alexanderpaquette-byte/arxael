@@ -85,14 +85,20 @@ density win is the bounded-concurrency gate + the merge workflow, not a warm con
   footprint even if the 1.5 GB seed is wrong for it.
 - **What would close it:** a tuning pass per ecosystem (footprint seed + worker count) on a real non-JVM
   suite, and — where the toolchain supports it — a warm-process variant of the adapter.
-- **Toolchain-home contention (low severity; ambient home by design):** CommandAdapters run the toolchain
-  with its AMBIENT home (`~/.m2`, `~/.gradle`, …), which could contend on that home's cache lock at *high
-  concurrent* `/invoke`. It does NOT affect the **merge gate** (non-gradle PRs route batched → the gate runs
-  one-at-a-time). A per-worktree `GRADLE_USER_HOME` for `gradlew` was tried and **reverted**: the wrapper's
-  Gradle *distribution* lives in `GRADLE_USER_HOME/wrapper/dists` and `GRADLE_RO_DEP_CACHE` shares only deps,
-  so per-worktree homes re-download the whole distribution per worktree — worse than the lock. The correct
-  fix (per-worktree caches but a SHARED `wrapper/dists` symlink) is deferred until a real high-concurrency
-  `gradlew`-`/invoke` workload shows the ambient home actually binds.
+- **Toolchain-home contention (mostly closed for `gradlew`; ambient home for the rest):** CommandAdapters
+  run their toolchain with its AMBIENT home (`~/.m2`, `~/.gradle`, …), which can contend on that home's
+  cache lock at *high concurrent* `/invoke`. For **`gradlew`** this is now closed under per-worktree-home
+  (default ON): `CommandAdapter.toolchainEnv` hands each gradlew invocation a per-worktree `GRADLE_USER_HOME`
+  (+ `GRADLE_RO_DEP_CACHE` when one is live), eliminating the shared-home cross-process cache lock —
+  the same lever the warm `gradle` adapter already pulls. The old re-download objection (the wrapper's Gradle
+  *distribution* lives in `GRADLE_USER_HOME/wrapper/dists`, and `GRADLE_RO_DEP_CACHE` shares only deps, NOT
+  the distribution — so a naive per-worktree home re-downloaded the whole dist per worktree) is solved by
+  pointing each home's `wrapper/dists` at ONE shared dir via a symlink: the dist downloads once, every other
+  worktree reads it back through the link. This matters for the **merge gate**: a project gated via its own
+  `gradlew` (e.g. `ARXAEL_MERGE_GATE_ADAPTER=gradlew`) previously ran every gate-worktree build against the
+  one shared `~/.gradle-home` — the dev-kit measured that shared-home contention costing **+46% merges/min @6
+  agents / +73% @12** for the warm gradle path; the gradlew gate now shares that win. maven/pytest/cargo/go/npm
+  keep the ambient home (they lock little; no measured benefit).
 
 ## 4. Trust model — loopback + trusted agents + an arg allowlist, and that's all
 

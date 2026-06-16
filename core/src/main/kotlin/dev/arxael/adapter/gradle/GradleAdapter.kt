@@ -114,9 +114,12 @@ class GradleAdapter : BuildAdapter {
             val task = java.util.concurrent.FutureTask<RunResult> {
                 try {
                     connection.newBuild()
-                        .apply { if (spec.tasks.isNotEmpty()) forTasks(*spec.tasks.toTypedArray()) }
+                        // Tasks are folded LEADING into the argument vector (not via forTasks) so a task option binds
+                        // to its task — CLI-equivalent `gradle test --tests X`. Via forTasks(...) + a detached --tests
+                        // the Tooling-API parser rejects --tests (no owning task on its vector). Empty tasks -> args-only,
+                        // same as forTasks() empty (Gradle runs default tasks). injected still trails -> substrate wins.
                         .apply { if (roDepCache != null) setEnvironmentVariables(System.getenv() + ("GRADLE_RO_DEP_CACHE" to roDepCache)) }
-                        .withArguments(spec.args + injected) // injected LAST -> substrate wins (see note above)
+                        .withArguments(spec.tasks + spec.args + injected) // tasks LEAD, injected LAST -> substrate wins
                         .setJvmArguments("-Xmx${config.heapPerServerMb}m")
                         .withCancellationToken(tokenSource.token())
                         .setStandardOutput(out)
